@@ -1,0 +1,172 @@
+{
+    "domain": "Politics",
+    "scene_name": "multilateral_climate_agreement_roundtable_negotiation",
+    "odd_protocol": {
+        "overview": {
+            "system_goal": "Simulate a formal international roundtable negotiation centered on a draft multilateral climate cooperation agreement. The system aims to model the diplomatic, legal, and political dynamics involved in reaching or debating international climate agreements, specifically focusing on how national interests in emission reduction intensity and financial commitments influence the final outcome, leading to either a consensus-based agreement text or a recorded impasse.",
+            "agent_types": "Two agent roles. Chairperson: coordinator of one negotiation table who opens each round, distributes the draft, tallies positions, applies the outcome rule, proposes compromise wording and ends the negotiation with an agreed text or an impasse record. Delegate: national representative at a table (group_id) who speaks in a fixed order (speaking_order); every delegate reviews the draft, forms positions from its national interests, and then proposes an amendment, endorses an earlier speaker's proposal, or makes a concession. Several tables can run in parallel as independent replications.",
+            "environment_description": "One or more formal roundtable rooms. Each table seats one Chairperson and the delegates with the same group_id. The environment holds the draft text, the clause identifiers, the agenda and the maximum number of rounds; each environment step is one negotiation round.",
+            "contextual_background": "The negotiation centers on a specific draft multilateral climate cooperation agreement. The core issues under discussion are emission reduction intensity (mitigation efforts) and financial commitments (funding). The context implies a focus on legal interpretations, compliance mechanisms, and judicial or diplomatic decisions related to climate change, rather than general policy discussions."
+        },
+        "design_concepts": {
+            "interaction_patterns": "Per round: Start -> Chairperson opens the round and sends the draft (plus last round's summary and compromise proposals) to every delegate at the table -> each Delegate reviews the draft and forms positions (in parallel) -> Delegates speak in speaking order; each speaker sees all proposals made earlier in the round -> Chairperson tallies positions -> Chairperson applies the outcome rule: consensus, impasse (after the last round), or adjournment to the next round.",
+            "communication_protocols": "Communication is governed by formal diplomatic protocols. The Chairperson initiates the process by distributing the draft and agenda. Delegates communicate their positions using precise terminology related to 'support,' 'conditional support,' or 'opposition.' Proposals for amendments or concessions are specific to the clauses of concern. The Chairperson records all positions and divergences systematically. The final output is either a formal agreed text or a record of the impasse with position distributions.",
+            "decision_mechanisms": "Delegates choose Support, Conditional Support (with a stated condition) or Oppose for each clause, then choose a move (amendment, endorsement, concession) and may revise their positions after hearing earlier speakers. The outcome rule is fixed: a clause is settled when nobody opposes it, every delegate has stated a position and the chair finds no conflict between the attached conditions; consensus requires every clause settled; if clauses remain unsettled after max_rounds the negotiation ends in impasse; otherwise it continues with the chair's compromise proposals.",
+            "workflow_sequence": "1. SetAgendaAndDistributeDraft (Chairperson). 2. ReviewDraftAndFormPosition (every Delegate, in parallel). 3. ProposeAmendmentOrConcession (Delegates in speaking order). 4. CollectPositionsAndDivergences (Chairperson). 5. DetermineOutcome (Chairperson). 6a. IssueAgreedText, 6b. DeclareImpasse, or 6c. adjourn to the next round."
+        },
+        "details": {
+            "agent_behaviors": "Chairperson: neutral; does not decide the outcome itself but flags settled-looking clauses whose conditions conflict, proposes compromise wording for unsettled clauses and summarises each round. Delegate: argues from its country's national interests (private), sees the public profiles of the other delegates at the table, states positions on every clause, and speaks after hearing earlier speakers.",
+            "decision_algorithms": "Positions are mapped to the clause identifiers in env_data.json; unrecognised keys are dropped and missing clauses are recorded as 'Unspecified', never filled in. The tally per clause counts Support, Conditional Support, Oppose and Unspecified. Opposed or unspecified clauses are unsettled. The outcome follows the fixed rule above.",
+            "specific_constraints": "Delegates are bound by their national mandates on emission reduction intensity and climate finance. Each table runs at most max_rounds rounds (env_data.json). Environment steps advance only after every table chair emits a round-completion or terminal-outcome event. A delegate that produces no valid response still reports to the chair (move 'failed'), so its clauses count as unsettled instead of stalling the round.",
+            "terminal_states": "Per table: Consensus (agreed text issued), Impasse (record of unsettled clauses after the last round), or Failed (the table could not open, e.g. no delegates with its group_id). After a table concludes, later environment steps close immediately for that table."
+        }
+    },
+    "agent_types": {
+        "Chairperson": "Presides over one negotiation table: opens each round, distributes the draft and the previous round's outcome, tallies the delegates' positions, applies the outcome rule, proposes compromises, and issues the agreed text or records the impasse.",
+        "Delegate": "Represents one country at a table. Each round: reviews the draft and states a position on every clause from its national interests, then speaks in turn (amendment, endorsement of an earlier speaker, or concession) and reports its end-of-turn positions."
+    },
+    "portrait": {
+        "Chairperson": 1,
+        "Delegate": 2
+    },
+    "default_agent_counts": {
+        "Chairperson": 1,
+        "Delegate": 3
+    },
+    "minimum_agent_counts": {
+        "Chairperson": 1,
+        "Delegate": 3
+    },
+    "metrics": [
+        {
+            "id": "Negotiation_Outcome_Distribution",
+            "name": "Negotiation Outcome Distribution",
+            "description": "Number of negotiation tables in each state: Not started, In progress, Consensus, Impasse, Failed.",
+            "visualization_type": "pie",
+            "update_interval": 1,
+            "variables": [
+                {
+                    "name": "outcome_status",
+                    "source_type": "agent",
+                    "agent_type": "Chairperson",
+                    "path": "outcome_status",
+                    "required": false,
+                    "is_list": true
+                }
+            ],
+            "calculation_logic": "Count Chairperson outcome_status values; a missing value means the table has not started.",
+            "function_name": "Negotiation_Outcome_Distribution"
+        },
+        {
+            "id": "Negotiation_Progress",
+            "name": "Negotiation Progress",
+            "description": "Mean number of unsettled clauses per table and the highest round reached, over time.",
+            "visualization_type": "line",
+            "update_interval": 1,
+            "variables": [
+                {
+                    "name": "open_divergence_count",
+                    "source_type": "agent",
+                    "agent_type": "Chairperson",
+                    "path": "open_divergence_count",
+                    "required": false,
+                    "is_list": true
+                },
+                {
+                    "name": "current_round",
+                    "source_type": "agent",
+                    "agent_type": "Chairperson",
+                    "path": "current_round",
+                    "required": false,
+                    "is_list": true
+                }
+            ],
+            "calculation_logic": "Mean of open_divergence_count over tables that have reported one; maximum of current_round.",
+            "function_name": "Negotiation_Progress"
+        },
+        {
+            "id": "Clause_Alignment_vs_Divergence",
+            "name": "Clause Alignment vs Divergence",
+            "description": "Settled versus unsettled clauses, summed over all tables, after each table's latest round.",
+            "visualization_type": "bar",
+            "update_interval": 1,
+            "variables": [
+                {
+                    "name": "aligned_clauses",
+                    "source_type": "agent",
+                    "agent_type": "Chairperson",
+                    "path": "aligned_clauses",
+                    "required": false,
+                    "is_list": true
+                },
+                {
+                    "name": "divergent_clauses",
+                    "source_type": "agent",
+                    "agent_type": "Chairperson",
+                    "path": "divergent_clauses",
+                    "required": false,
+                    "is_list": true
+                }
+            ],
+            "calculation_logic": "Sum the lengths of aligned_clauses and divergent_clauses over Chairperson agents.",
+            "function_name": "Clause_Alignment_vs_Divergence"
+        },
+        {
+            "id": "Delegate_Moves",
+            "name": "Delegate Moves (latest round)",
+            "description": "How many delegates made an amendment, an endorsement, a concession, or gave no valid response in their latest turn.",
+            "visualization_type": "bar",
+            "update_interval": 1,
+            "variables": [
+                {
+                    "name": "last_move",
+                    "source_type": "agent",
+                    "agent_type": "Delegate",
+                    "path": "last_move",
+                    "required": false,
+                    "is_list": true
+                }
+            ],
+            "calculation_logic": "Count Delegate last_move values per category.",
+            "function_name": "Delegate_Moves"
+        },
+        {
+            "id": "Position_Shifts",
+            "name": "Position Shifts",
+            "description": "Number of clause positions that delegates changed relative to their previous round, summed over all delegates, over time.",
+            "visualization_type": "line",
+            "update_interval": 1,
+            "variables": [
+                {
+                    "name": "positions_changed_last_round",
+                    "source_type": "agent",
+                    "agent_type": "Delegate",
+                    "path": "positions_changed_last_round",
+                    "required": false,
+                    "is_list": true
+                }
+            ],
+            "calculation_logic": "Sum of positions_changed_last_round over Delegate agents.",
+            "function_name": "Position_Shifts"
+        },
+        {
+            "id": "Delegate_Concession_Willingness",
+            "name": "Delegate Concession Willingness",
+            "description": "Delegates who said, in their latest turn, that they would consider further concessions in a later round.",
+            "visualization_type": "pie",
+            "update_interval": 1,
+            "variables": [
+                {
+                    "name": "willing_to_concede",
+                    "source_type": "agent",
+                    "agent_type": "Delegate",
+                    "path": "willing_to_concede",
+                    "required": false,
+                    "is_list": true
+                }
+            ],
+            "calculation_logic": "Count true and false willing_to_concede values; missing values mean the delegate has not spoken yet.",
+            "function_name": "Delegate_Concession_Willingness"
+        }
+    ]
+}

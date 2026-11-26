@@ -14,6 +14,12 @@ from onesim.models.core.model_manager import ModelManager
 from backend.models.config import ConfigOptions, ProfileCountRequest, ProfileCountResponse, SaveConfigRequest, SaveConfigResponse
 from backend.models.simulation import AgentInfo
 from backend.utils.model_management import load_model_if_needed, get_available_models
+from backend.utils.scene_config import (
+    apply_agent_count_constraints,
+    apply_scene_runtime_constraints,
+    load_agent_count_settings,
+    load_scene_runtime_settings,
+)
 
 router = APIRouter(
     prefix="/config",
@@ -168,6 +174,8 @@ def get_config_options(env_name: str):
     scene_info_path = os.path.join(scene_path, "scene_info.json")
     agent_types = {}
     portrait = {}
+    default_agent_counts = {}
+    minimum_agent_counts = {}
     
     if os.path.exists(scene_info_path):
         try:
@@ -183,6 +191,9 @@ def get_config_options(env_name: str):
             else:
                 # 如果未找到，生成默认头像
                 portrait = generate_default_portrait(agent_types.keys())
+            count_settings = load_agent_count_settings(scene_path)
+            default_agent_counts = count_settings["default_agent_counts"]
+            minimum_agent_counts = count_settings["minimum_agent_counts"]
         except Exception as e:
             logger.error(f"加载scene_info.json出错: {e}")
     
@@ -205,17 +216,25 @@ def get_config_options(env_name: str):
         portrait_value = portrait.get(agent_type, 1)  # 若未指定则默认为1
         
         profile_options[agent_type] = {
-            "count": 1,  # 默认为1或如果配置文件较少则更少
-            "max_count": count,  # 添加max_count字段以指示最大可用配置文件
+            "count": default_agent_counts.get(agent_type, minimum_agent_counts.get(agent_type, 1)),
+            "minimum_count": minimum_agent_counts.get(agent_type, 1),
+            "max_count": max(count, minimum_agent_counts.get(agent_type, 1)),
             "portrait": portrait_value  # 添加来自scene_info.json的头像值或默认值
         }
     
+    try:
+        runtime_settings = load_scene_runtime_settings(scene_path)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
     # 创建环境选项
     environment_options = {
         "name": env_name,  # 固定，不可更改
         "mode": "round",  # 默认模式
         "modes": ["round", "tick"],  # 可用模式
-        "max_steps": 3  # 默认最大回合数
+        "max_steps": runtime_settings.get("max_rounds", 3),
+        "max_steps_locked": "max_rounds" in runtime_settings,
+        "bus_idle_timeout": runtime_settings.get("bus_idle_timeout", 30.0),
     }
     
     # 创建代理选项
@@ -323,6 +342,12 @@ async def save_config(data: SaveConfigRequest):
             else:
                 merged_config["agent"]["memory"]["strategy"] = user_config["agent"]["memory"]
 
+    try:
+        apply_agent_count_constraints(merged_config, scene_path)
+        apply_scene_runtime_constraints(merged_config, scene_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # 如果在用户配置中存在则更新模型设置
     if "model" in user_config:
         if "model" not in merged_config:
@@ -383,7 +408,10 @@ async def save_config(data: SaveConfigRequest):
 
         return SaveConfigResponse(
             success=True,
-            message=f"已保存环境'{env_name}'的配置"
+            message=(
+                f"已保存环境'{env_name}'的配置；仿真步数已与场景谈判轮数同步为 "
+                f"{merged_config['simulator']['environment']['max_steps']}"
+            )
         )
     except Exception as e:
         logger.error(f"保存配置出错: {e}")

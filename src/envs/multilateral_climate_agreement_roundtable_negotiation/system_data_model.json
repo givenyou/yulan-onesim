@@ -1,0 +1,106 @@
+{
+    "environment": {
+        "variables": [
+            {
+                "name": "draft_content",
+                "type": "str",
+                "default_value": null
+            },
+            {
+                "name": "clause_ids",
+                "type": "list[str]",
+                "default_value": null
+            },
+            {
+                "name": "agenda_items",
+                "type": "list[str]",
+                "default_value": null
+            },
+            {
+                "name": "max_rounds",
+                "type": "int",
+                "default_value": null
+            }
+        ]
+    },
+    "agents": {
+        "Chairperson": {
+            "variables": [
+                {
+                    "name": "current_round",
+                    "type": "int",
+                    "default_value": null
+                },
+                {
+                    "name": "outcome_status",
+                    "type": "str",
+                    "default_value": null
+                },
+                {
+                    "name": "open_divergence_count",
+                    "type": "int",
+                    "default_value": null
+                },
+                {
+                    "name": "aligned_clauses",
+                    "type": "list[str]",
+                    "default_value": null
+                },
+                {
+                    "name": "divergent_clauses",
+                    "type": "list[str]",
+                    "default_value": null
+                },
+                {
+                    "name": "round_summary",
+                    "type": "str",
+                    "default_value": null
+                },
+                {
+                    "name": "final_agreed_text",
+                    "type": "str",
+                    "default_value": null
+                },
+                {
+                    "name": "impasse_record",
+                    "type": "str",
+                    "default_value": null
+                }
+            ]
+        },
+        "Delegate": {
+            "variables": [
+                {
+                    "name": "national_interests",
+                    "type": "str",
+                    "default_value": null
+                },
+                {
+                    "name": "current_round",
+                    "type": "int",
+                    "default_value": null
+                },
+                {
+                    "name": "clause_positions",
+                    "type": "dict[str, str]",
+                    "default_value": null
+                },
+                {
+                    "name": "last_move",
+                    "type": "str",
+                    "default_value": null
+                },
+                {
+                    "name": "willing_to_concede",
+                    "type": "bool",
+                    "default_value": null
+                },
+                {
+                    "name": "positions_changed_last_round",
+                    "type": "int",
+                    "default_value": null
+                }
+            ]
+        }
+    }
+}

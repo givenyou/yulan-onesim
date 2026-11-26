@@ -1,0 +1,281 @@
+{
+    "Chairperson": [
+        {
+            "id": 1,
+            "name": "set_agenda_and_distribute_draft",
+            "condition": "Start of each environment step",
+            "description": "Opens a new negotiation round at this table: finds the delegates seated at the table (same group_id), and sends them the draft, the clause list, the speaking order, the previous round's summary and the chair's compromise proposals. If the table has already concluded, or cannot open, it closes the step immediately.",
+            "type": "OR",
+            "required_variables": [
+                {
+                    "name": "draft_content",
+                    "type": "str",
+                    "context": "env",
+                    "description": "Full text of the draft agreement."
+                },
+                {
+                    "name": "clause_ids",
+                    "type": "list[str]",
+                    "context": "env",
+                    "description": "Clause identifiers that every position must use."
+                },
+                {
+                    "name": "agenda_items",
+                    "type": "list[str]",
+                    "context": "env",
+                    "description": "Agenda lines, each starting with its clause identifier."
+                },
+                {
+                    "name": "max_rounds",
+                    "type": "int",
+                    "context": "env",
+                    "description": "Number of negotiation rounds before an impasse is declared."
+                }
+            ],
+            "output_updates": [
+                {
+                    "name": "current_round",
+                    "type": "int",
+                    "context": "agent",
+                    "description": "Round now under way at this table."
+                },
+                {
+                    "name": "outcome_status",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "In progress / Consensus / Impasse / Failed."
+                }
+            ]
+        },
+        {
+            "id": 2,
+            "name": "collect_positions_and_divergences",
+            "condition": "A proposal has arrived from every delegate at the table for the current round",
+            "description": "Collects each delegate's move and end-of-turn positions, tallies Support / Conditional Support / Oppose / Unspecified per clause, and marks a clause unsettled if anyone opposes it or gave no position. No LLM call.",
+            "type": "AND",
+            "required_variables": [
+                {
+                    "name": "delegate_proposals",
+                    "type": "list[dict]",
+                    "context": "event",
+                    "description": "One AmendmentProposedEvent per delegate at the table."
+                }
+            ],
+            "output_updates": [
+                {
+                    "name": "open_divergence_count",
+                    "type": "int",
+                    "context": "agent",
+                    "description": "Number of unsettled clauses after the tally."
+                }
+            ]
+        },
+        {
+            "id": 3,
+            "name": "determine_outcome",
+            "condition": "All proposals of the round have been tallied",
+            "description": "Applies the fixed outcome rule: all clauses settled -> consensus; clauses unsettled after the last round -> impasse; otherwise adjourn to the next round. The chair (LLM) flags settled-looking clauses whose conditions conflict, proposes compromise wording for unsettled clauses, and summarises the round.",
+            "type": "OR",
+            "required_variables": [
+                {
+                    "name": "all_positions",
+                    "type": "dict[str, dict[str, str]]",
+                    "context": "event",
+                    "description": "End-of-turn positions of each delegate."
+                },
+                {
+                    "name": "clause_tally",
+                    "type": "dict[str, dict[str, int]]",
+                    "context": "event",
+                    "description": "Position counts per clause."
+                },
+                {
+                    "name": "unsettled_clauses",
+                    "type": "list[str]",
+                    "context": "event",
+                    "description": "Clauses someone opposes or left unspecified."
+                }
+            ],
+            "output_updates": [
+                {
+                    "name": "aligned_clauses",
+                    "type": "list[str]",
+                    "context": "agent",
+                    "description": "Clauses settled in this round."
+                },
+                {
+                    "name": "divergent_clauses",
+                    "type": "list[str]",
+                    "context": "agent",
+                    "description": "Clauses still unsettled."
+                },
+                {
+                    "name": "open_divergence_count",
+                    "type": "int",
+                    "context": "agent",
+                    "description": "Number of unsettled clauses."
+                },
+                {
+                    "name": "round_summary",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "Chair's summary of the round."
+                }
+            ]
+        },
+        {
+            "id": 4,
+            "name": "issue_agreed_text",
+            "condition": "Every clause is settled",
+            "description": "Drafts the final agreed text from the original draft, the amendments and the conditions behind the final positions, then ends the negotiation at this table.",
+            "type": "OR",
+            "required_variables": [
+                {
+                    "name": "final_accepted_positions",
+                    "type": "dict[str, str]",
+                    "context": "event",
+                    "description": "Support or Conditional Support per clause."
+                },
+                {
+                    "name": "accepted_amendments",
+                    "type": "list[dict]",
+                    "context": "event",
+                    "description": "Proposals on the table in the final round."
+                }
+            ],
+            "output_updates": [
+                {
+                    "name": "final_agreed_text",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "Text of the agreement."
+                },
+                {
+                    "name": "outcome_status",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "Set to Consensus."
+                }
+            ]
+        },
+        {
+            "id": 5,
+            "name": "declare_impasse",
+            "condition": "Clauses are still unsettled after the last round",
+            "description": "Writes a formal impasse record (position distribution, reasons, stated willingness to concede) and ends the negotiation at this table.",
+            "type": "OR",
+            "required_variables": [
+                {
+                    "name": "divergent_clauses",
+                    "type": "list[str]",
+                    "context": "event",
+                    "description": "Clauses still unsettled."
+                },
+                {
+                    "name": "concession_willingness_status",
+                    "type": "dict[str, bool]",
+                    "context": "event",
+                    "description": "Each delegate's stated willingness to concede further."
+                }
+            ],
+            "output_updates": [
+                {
+                    "name": "impasse_record",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "Formal impasse record."
+                },
+                {
+                    "name": "outcome_status",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "Set to Impasse."
+                }
+            ]
+        }
+    ],
+    "Delegate": [
+        {
+            "id": 6,
+            "name": "review_draft_and_form_position",
+            "condition": "Draft received for a new round",
+            "description": "Reviews the draft (and, after round 1, the chair's summary and compromise proposals) and states Support / Conditional Support / Oppose on every clause, with the condition behind each Conditional Support.",
+            "type": "OR",
+            "required_variables": [
+                {
+                    "name": "draft_content",
+                    "type": "str",
+                    "context": "event",
+                    "description": "Draft text."
+                },
+                {
+                    "name": "clause_ids",
+                    "type": "list[str]",
+                    "context": "event",
+                    "description": "Clause identifiers to use."
+                },
+                {
+                    "name": "national_interests",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "Country's interests on emission reduction and climate finance (private profile field)."
+                }
+            ],
+            "output_updates": [
+                {
+                    "name": "current_round",
+                    "type": "int",
+                    "context": "agent",
+                    "description": "Round the delegate is in."
+                }
+            ]
+        },
+        {
+            "id": 7,
+            "name": "propose_amendment_or_concession",
+            "condition": "Own positions formed AND the proposals of every earlier speaker in this round received",
+            "description": "Speaks in turn: proposes an amendment, endorses an earlier speaker's proposal, or makes a concession; reports end-of-turn positions and whether further concessions would be considered. Sends the proposal to the chair and the accumulated proposals to the next speaker.",
+            "type": "AND",
+            "required_variables": [
+                {
+                    "name": "clause_positions",
+                    "type": "dict[str, str]",
+                    "context": "event",
+                    "description": "Own positions from the review step."
+                },
+                {
+                    "name": "prior_amendments",
+                    "type": "list[dict]",
+                    "context": "event",
+                    "description": "Proposals of delegates who spoke earlier in this round (empty for the first speaker)."
+                }
+            ],
+            "output_updates": [
+                {
+                    "name": "clause_positions",
+                    "type": "dict[str, str]",
+                    "context": "agent",
+                    "description": "Positions at the end of the delegate's turn."
+                },
+                {
+                    "name": "last_move",
+                    "type": "str",
+                    "context": "agent",
+                    "description": "amendment / endorsement / concession / failed."
+                },
+                {
+                    "name": "willing_to_concede",
+                    "type": "bool",
+                    "context": "agent",
+                    "description": "Stated willingness to make further concessions later."
+                },
+                {
+                    "name": "positions_changed_last_round",
+                    "type": "int",
+                    "context": "agent",
+                    "description": "Clauses whose position changed since the previous round."
+                }
+            ]
+        }
+    ]
+}

@@ -30,7 +30,7 @@ build:
 # 启动容器
 run:
 	@echo "🚀 启动 YuLan-OneSim 容器..."
-	docker run -d --name $(CONTAINER_NAME) -p 8000:80 -v ./config:/app/config $(IMAGE_NAME):$(TAG)
+	docker run -d --name $(CONTAINER_NAME) -p 8000:80 -v ./config:/app/config -v ./src/envs/multilateral_climate_agreement_roundtable_negotiation/runs:/app/src/envs/multilateral_climate_agreement_roundtable_negotiation/runs $(IMAGE_NAME):$(TAG)
 	@echo "✅ 容器已启动！"
 	@echo "🌐 Web界面: http://localhost:8000"
 	@echo "📚 API文档: http://localhost:8000/docs"

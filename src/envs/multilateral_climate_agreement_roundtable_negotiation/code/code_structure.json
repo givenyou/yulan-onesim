@@ -1,0 +1,872 @@
+{
+  "agents": {
+    "Chairperson": {
+      "imports": "from typing import Any, List, Optional\nimport json\nimport asyncio\nfrom loguru import logger\nfrom onesim.models import JsonBlockParser\nfrom onesim.agent import GeneralAgent\nfrom onesim.profile import AgentProfile\nfrom onesim.memory import MemoryStrategy\nfrom onesim.planning import PlanningBase\nfrom onesim.events import *\nfrom onesim.relationship import RelationshipManager\nfrom .events import *\nfrom .negotiation_utils import *",
+      "handlers": {
+        "1": {
+          "code": "async def set_agenda_and_distribute_draft(self, event: Event) -> List[Event]:\n        # One StartEvent = one environment step. Each step opens a new negotiation\n        # round until the table has concluded; after that the step is closed at once.\n        state = get_state(self)\n        if state.get(\"concluded\"):\n            return [NegotiationClosedEvent(\n                self.profile_id, \"ENV\",\n                round_number=state.get(\"round\", 0),\n                closure_reason=\"already_concluded\",\n                final_outcome=state.get(\"outcome\", \"\"),\n            )]\n        if state.get(\"round_open\"):\n            # The environment moved on (e.g. idle timeout) while this round is still running.\n            # The running round will close the step when it finishes.\n            logger.warning(f\"Chairperson {self.profile_id}: StartEvent received while round \"\n                           f\"{state.get('round')} is still open; consider a larger bus_idle_timeout.\")\n            return []\n        state[\"round_open\"] = True\n        round_no = state.get(\"round\", 0) + 1\n\n        delegates = find_table_delegates(self)\n        draft_content = as_text(await self.get_env_data(\"draft_content\", \"\"), 20000)\n        clause_ids = clause_list(await self.get_env_data(\"clause_ids\", None))\n        agenda_items = await self.get_env_data(\"agenda_items\", [])\n        max_rounds = max(1, as_int(await self.get_env_data(\"max_rounds\", 3), 3))\n\n        problem = \"\"\n        if not delegates:\n            problem = \"no_delegates_at_table\"\n        elif not draft_content:\n            problem = \"missing_draft_content\"\n        if problem:\n            logger.error(f\"Chairperson {self.profile_id}: cannot open the negotiation ({problem}).\")\n            state.update({\"concluded\": True, \"round_open\": False, \"outcome\": \"Failed\", \"round\": round_no})\n            self.profile.update_data(\"outcome_status\", \"Failed\")\n            self.profile.update_data(\"current_round\", round_no)\n            return [NegotiationClosedEvent(self.profile_id, \"ENV\", round_number=round_no,\n                                           closure_reason=problem, final_outcome=\"Failed\")]\n\n        state.update({\n            \"round\": round_no,\n            \"max_rounds\": max_rounds,\n            \"clause_ids\": clause_ids,\n            \"draft_content\": draft_content,\n        })\n        round_state(state, round_no).update({\n            \"expected\": list(delegates),\n            \"received\": {},\n            \"collected\": False,\n            \"deciding\": False,\n        })\n        self.profile.update_data(\"current_round\", round_no)\n        self.profile.update_data(\"outcome_status\", \"In progress\")\n\n        return [\n            DraftDistributedEvent(\n                self.profile_id,\n                delegate_id,\n                round_number=round_no,\n                max_rounds=max_rounds,\n                draft_content=draft_content,\n                clause_ids=clause_ids,\n                agenda_items=list(agenda_items) if isinstance(agenda_items, list) else [],\n                speaking_order=list(delegates),\n                previous_round_summary=state.get(\"last_summary\", \"\"),\n                open_divergences=list(state.get(\"open_divergences\", [])),\n                chair_proposals=dict(state.get(\"chair_proposals\", {})),\n            )\n            for delegate_id in delegates\n        ]",
+          "metadata": {
+            "id": 1,
+            "name": "set_agenda_and_distribute_draft",
+            "condition": "Start of each environment step",
+            "description": "Opens a new negotiation round at this table: finds the delegates seated at the table (same group_id), and sends them the draft, the clause list, the speaking order, the previous round's summary and the chair's compromise proposals. If the table has already concluded, or cannot open, it closes the step immediately.",
+            "type": "OR",
+            "required_variables": [
+              {
+                "name": "draft_content",
+                "type": "str",
+                "context": "env",
+                "description": "Full text of the draft agreement."
+              },
+              {
+                "name": "clause_ids",
+                "type": "list[str]",
+                "context": "env",
+                "description": "Clause identifiers that every position must use."
+              },
+              {
+                "name": "agenda_items",
+                "type": "list[str]",
+                "context": "env",
+                "description": "Agenda lines, each starting with its clause identifier."
+              },
+              {
+                "name": "max_rounds",
+                "type": "int",
+                "context": "env",
+                "description": "Number of negotiation rounds before an impasse is declared."
+              }
+            ],
+            "output_updates": [
+              {
+                "name": "current_round",
+                "type": "int",
+                "context": "agent",
+                "description": "Round now under way at this table."
+              },
+              {
+                "name": "outcome_status",
+                "type": "str",
+                "context": "agent",
+                "description": "In progress / Consensus / Impasse / Failed."
+              }
+            ]
+          }
+        },
+        "2": {
+          "code": "async def collect_positions_and_divergences(self, event: Event) -> List[Event]:\n        # Waits until every delegate at the table has spoken in this round.\n        # No LLM call: positions arrive structured and are tallied in code.\n        state = get_state(self)\n        round_no = as_int(getattr(event, \"round_number\", 0), 0)\n        rs = state.get(\"rounds\", {}).get(round_no)\n        sender = str(event.from_agent_id)\n        if rs is None or rs.get(\"collected\"):\n            logger.warning(f\"Chairperson {self.profile_id}: late proposal from {sender} for round {round_no} ignored.\")\n            return []\n        if sender not in rs.get(\"expected\", []):\n            logger.warning(f\"Chairperson {self.profile_id}: proposal from {sender}, who is not at this table, ignored.\")\n            return []\n        if sender in rs[\"received\"]:\n            return []\n\n        clause_ids = state.get(\"clause_ids\") or clause_list(None)\n        positions, _, _ = normalize_positions(getattr(event, \"clause_positions\", None), clause_ids)\n        rs[\"received\"][sender] = {\n            \"delegate_id\": sender,\n            \"country\": as_text(getattr(event, \"country\", \"\"), 200),\n            \"move\": as_text(getattr(event, \"move\", \"\")) or \"amendment\",\n            \"target_clauses\": map_clause_list(getattr(event, \"target_clauses\", None), clause_ids),\n            \"amendment_text\": as_text(getattr(event, \"amendment_text\", \"\"), 2000),\n            \"rationale\": as_text(getattr(event, \"rationale\", \"\"), 1500),\n            \"endorsed_delegate_id\": as_text(getattr(event, \"endorsed_delegate_id\", \"\"), 50),\n            \"willing_to_make_further_concessions\": as_bool(getattr(event, \"willing_to_make_further_concessions\", False)),\n            \"clause_positions\": positions,\n            \"conditions\": normalize_conditions(getattr(event, \"conditions\", None), clause_ids),\n            \"positions_changed\": as_int(getattr(event, \"positions_changed\", 0), 0),\n            \"failed\": as_bool(getattr(event, \"failed\", False)),\n            \"failure_reason\": as_text(getattr(event, \"failure_reason\", \"\"), 500),\n        }\n        if len(rs[\"received\"]) < len(rs[\"expected\"]):\n            return []\n        rs[\"collected\"] = True\n\n        amendments = [rs[\"received\"][did] for did in rs[\"expected\"]]\n        all_positions = {a[\"delegate_id\"]: a[\"clause_positions\"] for a in amendments}\n        tally = tally_positions(all_positions, clause_ids)\n        unsettled = unsettled_clauses(tally, clause_ids)\n        self.profile.update_data(\"open_divergence_count\", len(unsettled))\n        return [PositionsCollectedEvent(\n            self.profile_id,\n            self.profile_id,\n            round_number=round_no,\n            all_positions=all_positions,\n            all_amendments=amendments,\n            clause_tally=tally,\n            unsettled_clauses=unsettled,\n        )]",
+          "metadata": {
+            "id": 2,
+            "name": "collect_positions_and_divergences",
+            "condition": "A proposal has arrived from every delegate at the table for the current round",
+            "description": "Collects each delegate's move and end-of-turn positions, tallies Support / Conditional Support / Oppose / Unspecified per clause, and marks a clause unsettled if anyone opposes it or gave no position. No LLM call.",
+            "type": "AND",
+            "required_variables": [
+              {
+                "name": "delegate_proposals",
+                "type": "list[dict]",
+                "context": "event",
+                "description": "One AmendmentProposedEvent per delegate at the table."
+              }
+            ],
+            "output_updates": [
+              {
+                "name": "open_divergence_count",
+                "type": "int",
+                "context": "agent",
+                "description": "Number of unsettled clauses after the tally."
+              }
+            ]
+          }
+        },
+        "3": {
+          "code": "async def determine_outcome(self, event: Event) -> List[Event]:\n        # The outcome rule is applied in code so it cannot contradict the positions:\n        #   every clause settled                -> Consensus\n        #   clauses unsettled after last round  -> Impasse\n        #   otherwise                           -> adjourn to the next round\n        # The LLM only flags incompatible conditions, proposes compromises and summarises.\n        state = get_state(self)\n        round_no = as_int(getattr(event, \"round_number\", 0), 0)\n        rs = state.get(\"rounds\", {}).get(round_no)\n        if rs is None or rs.get(\"deciding\"):\n            return []\n        rs[\"deciding\"] = True\n\n        clause_ids = state.get(\"clause_ids\") or clause_list(None)\n        max_rounds = state.get(\"max_rounds\", 1)\n        all_positions = getattr(event, \"all_positions\", None) or {}\n        amendments = getattr(event, \"all_amendments\", None) or []\n        tally = getattr(event, \"clause_tally\", None) or tally_positions(all_positions, clause_ids)\n        unsettled = map_clause_list(getattr(event, \"unsettled_clauses\", None), clause_ids)\n        willingness = {str(a.get(\"delegate_id\")): as_bool(a.get(\"willing_to_make_further_concessions\")) for a in amendments}\n        failed_delegates = [str(a.get(\"delegate_id\")) for a in amendments if a.get(\"failed\")]\n        names = {str(a.get(\"delegate_id\")): a.get(\"country\") or str(a.get(\"delegate_id\")) for a in amendments}\n\n        conflicts, proposals, summary = [], {}, \"\"\n        try:\n            observation = \"\\n\".join([\n                f\"Round {round_no} of {max_rounds}.\",\n                \"Positions at the end of this round:\",\n                positions_table_text(all_positions, clause_ids, names),\n                \"Counts per clause:\",\n                tally_text(tally),\n                \"Clauses unsettled because someone opposes them or gave no position: \" + (\", \".join(unsettled) or \"none\"),\n                \"Proposals made this round:\",\n                amendment_text_block(amendments),\n                \"Your summary of the previous round: \" + (state.get(\"last_summary\") or \"none\"),\n            ])\n            instruction = \"\"\"You chair a roundtable negotiation on a draft multilateral climate cooperation agreement.\nThe outcome is decided by a fixed rule, not by you: a clause is settled only if nobody opposes it and every delegate has stated a position; the negotiation ends in consensus when every clause is settled, ends in impasse when clauses are still unsettled after the final round, and otherwise continues with another round.\n\nYour tasks:\n1. \"conflicting_conditions\": clause IDs that look settled (everyone supports or conditionally supports) but where the conditions attached are incompatible with each other, so the clause is not really agreed. Use [] if there are none.\n2. \"compromise_proposals\": for each unsettled clause, including any you list in 1, one concrete compromise wording the delegates can consider in the next round.\n3. \"chair_summary\": a neutral summary of where the negotiation stands, 3 to 5 sentences.\n\nUse exactly these clause IDs: <<CLAUSE_IDS>>\nReturn a JSON object:\n{\n    \"conflicting_conditions\": [\"<clause ID>\"],\n    \"compromise_proposals\": {\"<clause ID>\": \"<compromise wording>\"},\n    \"chair_summary\": \"<summary>\"\n}\"\"\".replace(\"<<CLAUSE_IDS>>\", json.dumps(clause_ids))\n            result = await self.generate_reaction(instruction, observation)\n            if not isinstance(result, dict):\n                raise ValueError(\"reply is not a JSON object\")\n            conflicts = [cid for cid in map_clause_list(result.get(\"conflicting_conditions\"), clause_ids)\n                         if cid not in unsettled]\n            proposals = map_clause_dict(result.get(\"compromise_proposals\"), clause_ids)\n            summary = as_text(result.get(\"chair_summary\"), 2000)\n        except Exception as e:\n            logger.error(f\"Chairperson {self.profile_id}: chair analysis failed in round {round_no}: \"\n                         f\"{type(e).__name__}: {e}. Falling back to the rule-based summary.\")\n\n        open_clauses = [cid for cid in clause_ids if cid in unsettled or cid in conflicts]\n        settled = [cid for cid in clause_ids if cid not in open_clauses]\n        if not summary:\n            summary = default_round_summary(round_no, open_clauses, settled, failed_delegates)\n        proposals = {cid: text for cid, text in proposals.items() if cid in open_clauses}\n\n        if not open_clauses:\n            outcome = \"Consensus\"\n        elif round_no >= max_rounds:\n            outcome = \"Impasse\"\n        else:\n            outcome = \"Continue\"\n\n        state.setdefault(\"history\", []).append({\n            \"round\": round_no,\n            \"unsettled\": open_clauses,\n            \"conflicting_conditions\": conflicts,\n            \"failed_delegates\": failed_delegates,\n            \"outcome\": outcome,\n        })\n        state[\"open_divergences\"] = open_clauses\n        state[\"chair_proposals\"] = proposals\n        state[\"last_summary\"] = summary\n        state[\"last_tally\"] = tally\n        self.profile.update_data(\"open_divergence_count\", len(open_clauses))\n        self.profile.update_data(\"aligned_clauses\", settled)\n        self.profile.update_data(\"divergent_clauses\", open_clauses)\n        self.profile.update_data(\"round_summary\", summary)\n\n        if outcome == \"Consensus\":\n            final_positions = {}\n            for cid in clause_ids:\n                counts = tally.get(cid, {})\n                final_positions[cid] = \"Conditional Support\" if counts.get(\"Conditional Support\", 0) else \"Support\"\n            return [ConsensusReachedEvent(\n                self.profile_id, self.profile_id,\n                round_number=round_no,\n                aligned_clauses=settled,\n                final_accepted_positions=final_positions,\n                accepted_amendments=amendments,\n                chair_summary=summary,\n            )]\n        if outcome == \"Impasse\":\n            return [ImpasseDeclaredEvent(\n                self.profile_id, self.profile_id,\n                round_number=round_no,\n                divergent_clauses=open_clauses,\n                concession_willingness_status=willingness,\n                clause_tally=tally,\n                chair_summary=summary,\n            )]\n        state[\"round_open\"] = False\n        self.profile.update_data(\"outcome_status\", \"In progress\")\n        return [RoundAdjournedEvent(\n            self.profile_id, \"ENV\",\n            round_number=round_no,\n            open_divergences=open_clauses,\n            chair_summary=summary,\n        )]",
+          "metadata": {
+            "id": 3,
+            "name": "determine_outcome",
+            "condition": "All proposals of the round have been tallied",
+            "description": "Applies the fixed outcome rule: all clauses settled -> consensus; clauses unsettled after the last round -> impasse; otherwise adjourn to the next round. The chair (LLM) flags settled-looking clauses whose conditions conflict, proposes compromise wording for unsettled clauses, and summarises the round.",
+            "type": "OR",
+            "required_variables": [
+              {
+                "name": "all_positions",
+                "type": "dict[str, dict[str, str]]",
+                "context": "event",
+                "description": "End-of-turn positions of each delegate."
+              },
+              {
+                "name": "clause_tally",
+                "type": "dict[str, dict[str, int]]",
+                "context": "event",
+                "description": "Position counts per clause."
+              },
+              {
+                "name": "unsettled_clauses",
+                "type": "list[str]",
+                "context": "event",
+                "description": "Clauses someone opposes or left unspecified."
+              }
+            ],
+            "output_updates": [
+              {
+                "name": "aligned_clauses",
+                "type": "list[str]",
+                "context": "agent",
+                "description": "Clauses settled in this round."
+              },
+              {
+                "name": "divergent_clauses",
+                "type": "list[str]",
+                "context": "agent",
+                "description": "Clauses still unsettled."
+              },
+              {
+                "name": "open_divergence_count",
+                "type": "int",
+                "context": "agent",
+                "description": "Number of unsettled clauses."
+              },
+              {
+                "name": "round_summary",
+                "type": "str",
+                "context": "agent",
+                "description": "Chair's summary of the round."
+              }
+            ]
+          }
+        },
+        "4": {
+          "code": "async def issue_agreed_text(self, event: Event) -> List[Event]:\n        state = get_state(self)\n        if state.get(\"concluded\"):\n            return []\n        state[\"concluded\"] = True\n        round_no = as_int(getattr(event, \"round_number\", state.get(\"round\", 0)), state.get(\"round\", 0))\n        clause_ids = state.get(\"clause_ids\") or clause_list(None)\n        draft = state.get(\"draft_content\", \"\")\n        final_positions = getattr(event, \"final_accepted_positions\", None) or {}\n        accepted = getattr(event, \"accepted_amendments\", None) or []\n\n        final_text = \"\"\n        try:\n            observation = \"\\n\".join([\n                \"Original draft:\", draft,\n                \"Final positions per clause: \" + json.dumps(final_positions, ensure_ascii=False),\n                \"Proposals and conditions on the table in the final round:\",\n                amendment_text_block(accepted),\n                \"Chair's summary: \" + as_text(getattr(event, \"chair_summary\", \"\")),\n            ])\n            instruction = \"\"\"You chair a roundtable negotiation on a multilateral climate cooperation agreement, and every clause has now been settled.\nWrite the final agreed text. Start from the original draft and work in the amendments and the conditions that the delegates' final positions depend on. Keep the clause structure of the draft: <<CLAUSE_IDS>>. Do not add clauses that were not negotiated.\n\nReturn a JSON object:\n{\n    \"final_agreed_text\": \"<complete text of the agreed agreement>\"\n}\"\"\".replace(\"<<CLAUSE_IDS>>\", json.dumps(clause_ids))\n            result = await self.generate_reaction(instruction, observation)\n            if isinstance(result, dict):\n                final_text = as_text(result.get(\"final_agreed_text\"), 20000)\n        except Exception as e:\n            logger.error(f\"Chairperson {self.profile_id}: drafting the agreed text failed: {type(e).__name__}: {e}\")\n        if not final_text:\n            final_text = fallback_agreement_text(draft, accepted, final_positions)\n\n        state.update({\"round_open\": False, \"outcome\": \"Consensus\"})\n        self.profile.update_data(\"outcome_status\", \"Consensus\")\n        self.profile.update_data(\"final_agreed_text\", final_text)\n        return [AgreementFinalizedEvent(self.profile_id, \"ENV\", round_number=round_no,\n                                        final_agreed_text=final_text, simulation_status=\"Consensus\")]",
+          "metadata": {
+            "id": 4,
+            "name": "issue_agreed_text",
+            "condition": "Every clause is settled",
+            "description": "Drafts the final agreed text from the original draft, the amendments and the conditions behind the final positions, then ends the negotiation at this table.",
+            "type": "OR",
+            "required_variables": [
+              {
+                "name": "final_accepted_positions",
+                "type": "dict[str, str]",
+                "context": "event",
+                "description": "Support or Conditional Support per clause."
+              },
+              {
+                "name": "accepted_amendments",
+                "type": "list[dict]",
+                "context": "event",
+                "description": "Proposals on the table in the final round."
+              }
+            ],
+            "output_updates": [
+              {
+                "name": "final_agreed_text",
+                "type": "str",
+                "context": "agent",
+                "description": "Text of the agreement."
+              },
+              {
+                "name": "outcome_status",
+                "type": "str",
+                "context": "agent",
+                "description": "Set to Consensus."
+              }
+            ]
+          }
+        },
+        "5": {
+          "code": "async def declare_impasse(self, event: Event) -> List[Event]:\n        state = get_state(self)\n        if state.get(\"concluded\"):\n            return []\n        state[\"concluded\"] = True\n        round_no = as_int(getattr(event, \"round_number\", state.get(\"round\", 0)), state.get(\"round\", 0))\n        clause_ids = state.get(\"clause_ids\") or clause_list(None)\n        divergent = map_clause_list(getattr(event, \"divergent_clauses\", None), clause_ids)\n        willingness = getattr(event, \"concession_willingness_status\", None) or {}\n        tally = getattr(event, \"clause_tally\", None) or state.get(\"last_tally\", {})\n\n        record = \"\"\n        try:\n            observation = \"\\n\".join([\n                f\"Rounds held: {round_no}\",\n                \"Unsettled clauses: \" + (\", \".join(divergent) or \"none\"),\n                \"Position counts per clause:\",\n                tally_text(tally),\n                \"Willingness to consider further concessions: \" + json.dumps(willingness, ensure_ascii=False),\n                \"Chair's summary: \" + as_text(getattr(event, \"chair_summary\", \"\")),\n            ])\n            instruction = \"\"\"You chair a roundtable negotiation on a multilateral climate cooperation agreement. The final round has ended with clauses still unsettled, so the negotiation ends in impasse.\nWrite a formal impasse record covering: the position distribution on each unsettled clause, the main reasons agreement was not reached, and each delegate's stated willingness to make further concessions.\nWillingness to consider concessions later does not mean a compromise was reached. Describe a delegate as unwilling only if their status is false.\n\nReturn a JSON object:\n{\n    \"impasse_record\": \"<formal impasse record>\"\n}\"\"\"\n            result = await self.generate_reaction(instruction, observation)\n            if isinstance(result, dict):\n                record = as_text(result.get(\"impasse_record\"), 20000)\n        except Exception as e:\n            logger.error(f\"Chairperson {self.profile_id}: drafting the impasse record failed: {type(e).__name__}: {e}\")\n        if not record:\n            record = fallback_impasse_record(round_no, divergent, tally,\n                                             {str(k): as_bool(v) for k, v in willingness.items()})\n\n        state.update({\"round_open\": False, \"outcome\": \"Impasse\"})\n        self.profile.update_data(\"outcome_status\", \"Impasse\")\n        self.profile.update_data(\"impasse_record\", record)\n        return [ImpasseRecordedEvent(self.profile_id, \"ENV\", round_number=round_no,\n                                     impasse_record=record, simulation_status=\"Impasse\")]",
+          "metadata": {
+            "id": 5,
+            "name": "declare_impasse",
+            "condition": "Clauses are still unsettled after the last round",
+            "description": "Writes a formal impasse record (position distribution, reasons, stated willingness to concede) and ends the negotiation at this table.",
+            "type": "OR",
+            "required_variables": [
+              {
+                "name": "divergent_clauses",
+                "type": "list[str]",
+                "context": "event",
+                "description": "Clauses still unsettled."
+              },
+              {
+                "name": "concession_willingness_status",
+                "type": "dict[str, bool]",
+                "context": "event",
+                "description": "Each delegate's stated willingness to concede further."
+              }
+            ],
+            "output_updates": [
+              {
+                "name": "impasse_record",
+                "type": "str",
+                "context": "agent",
+                "description": "Formal impasse record."
+              },
+              {
+                "name": "outcome_status",
+                "type": "str",
+                "context": "agent",
+                "description": "Set to Impasse."
+              }
+            ]
+          }
+        }
+      }
+    },
+    "Delegate": {
+      "imports": "from typing import Any, List, Optional\nimport json\nimport asyncio\nfrom loguru import logger\nfrom onesim.models import JsonBlockParser\nfrom onesim.agent import GeneralAgent\nfrom onesim.profile import AgentProfile\nfrom onesim.memory import MemoryStrategy\nfrom onesim.planning import PlanningBase\nfrom onesim.events import *\nfrom onesim.relationship import RelationshipManager\nfrom .events import *\nfrom .negotiation_utils import *",
+      "handlers": {
+        "6": {
+          "code": "async def review_draft_and_form_position(self, event: Event) -> List[Event]:\n        # Every path below ends with a PositionFormedEvent, so the next step always runs.\n        round_no = as_int(getattr(event, \"round_number\", 1), 1)\n        state = get_state(self)\n        rs = round_state(state, round_no)\n        if rs.get(\"review_started\"):\n            logger.warning(f\"Delegate {self.profile_id}: duplicate draft for round {round_no} ignored.\")\n            return []\n        rs[\"review_started\"] = True\n\n        clause_ids = clause_list(getattr(event, \"clause_ids\", None))\n        rs[\"clause_ids\"] = clause_ids\n        rs[\"chair_id\"] = str(event.from_agent_id)\n        rs[\"speaking_order\"] = as_id_list(getattr(event, \"speaking_order\", None)) or [str(self.profile_id)]\n        rs[\"max_rounds\"] = as_int(getattr(event, \"max_rounds\", round_no), round_no)\n        rs[\"previous_round_summary\"] = as_text(getattr(event, \"previous_round_summary\", \"\"))\n        rs[\"open_divergences\"] = list(getattr(event, \"open_divergences\", None) or [])\n        rs[\"chair_proposals\"] = dict(getattr(event, \"chair_proposals\", None) or {})\n        state[\"round\"] = max(state.get(\"round\", 0), round_no)\n        previous_positions = dict(state.get(\"last_positions\", {}))\n\n        positions = {cid: UNSPECIFIED for cid in clause_ids}\n        conditions = {}\n        notes = \"\"\n        failed = False\n        failure_reason = \"\"\n        try:\n            observation = \"\\n\".join([\n                f\"Negotiation round: {round_no} of {rs['max_rounds']}\",\n                \"Draft agreement:\",\n                as_text(getattr(event, \"draft_content\", \"\")),\n                \"Agenda:\",\n                \"\\n\".join(f\"- {item}\" for item in (getattr(event, \"agenda_items\", None) or [])),\n                \"Your positions at the end of the previous round: \"\n                + (json.dumps(previous_positions, ensure_ascii=False) if previous_positions else \"none (first round)\"),\n                \"Chair's summary of the previous round: \" + (rs[\"previous_round_summary\"] or \"none\"),\n                \"Clauses still unsettled: \" + (\", \".join(rs[\"open_divergences\"]) or \"none\"),\n                \"Chair's compromise proposals: \"\n                + (json.dumps(rs[\"chair_proposals\"], ensure_ascii=False) if rs[\"chair_proposals\"] else \"none\"),\n            ])\n            instruction = \"\"\"You are a national delegate at a roundtable negotiation on a draft multilateral climate cooperation agreement.\nReview the draft (and, after the first round, the chair's summary and compromise proposals) and state your country's position on every clause, based on the national interests in your profile on emission reduction intensity and climate finance.\n\nUse exactly these clause IDs as keys: <<CLAUSE_IDS>>\nAllowed positions: \"Support\", \"Conditional Support\", \"Oppose\".\nOnly use \"Conditional Support\" if you can name the condition that would make the clause acceptable.\n\nReturn a JSON object:\n{\n    \"clause_positions\": {\"<clause ID>\": \"Support | Conditional Support | Oppose\"},\n    \"conditions\": {\"<clause ID with Conditional Support>\": \"<what would make it acceptable>\"},\n    \"reasoning_summary\": \"<2-3 sentences on how your national interests shape these positions>\"\n}\"\"\".replace(\"<<CLAUSE_IDS>>\", json.dumps(clause_ids))\n            result = await self.generate_reaction(instruction, observation)\n            if not isinstance(result, dict):\n                raise ValueError(\"reply is not a JSON object\")\n            positions, dropped, missing = normalize_positions(result.get(\"clause_positions\"), clause_ids)\n            conditions = normalize_conditions(result.get(\"conditions\"), clause_ids)\n            notes = as_text(result.get(\"reasoning_summary\"), 1200)\n            if dropped:\n                logger.warning(f\"Delegate {self.profile_id}: ignored unrecognised positions {dropped}\")\n            if missing:\n                logger.warning(f\"Delegate {self.profile_id}: no position given for {missing}; recorded as {UNSPECIFIED}\")\n            if len(missing) == len(clause_ids):\n                failed = True\n                failure_reason = \"no usable clause positions in the reply\"\n        except Exception as e:\n            failed = True\n            failure_reason = f\"{type(e).__name__}: {e}\"\n            logger.error(f\"Delegate {self.profile_id}: reviewing the draft failed in round {round_no}: {failure_reason}\")\n\n        rs[\"review_positions\"] = positions\n        rs[\"review_conditions\"] = conditions\n        rs[\"review_notes\"] = notes\n        rs[\"review_failed\"] = failed\n        self.profile.update_data(\"current_round\", round_no)\n        return [PositionFormedEvent(\n            self.profile_id,\n            self.profile_id,\n            round_number=round_no,\n            delegate_id=str(self.profile_id),\n            clause_positions=positions,\n            conditions=conditions,\n            position_notes=notes,\n            failed=failed,\n            failure_reason=failure_reason,\n        )]",
+          "metadata": {
+            "id": 6,
+            "name": "review_draft_and_form_position",
+            "condition": "Draft received for a new round",
+            "description": "Reviews the draft (and, after round 1, the chair's summary and compromise proposals) and states Support / Conditional Support / Oppose on every clause, with the condition behind each Conditional Support.",
+            "type": "OR",
+            "required_variables": [
+              {
+                "name": "draft_content",
+                "type": "str",
+                "context": "event",
+                "description": "Draft text."
+              },
+              {
+                "name": "clause_ids",
+                "type": "list[str]",
+                "context": "event",
+                "description": "Clause identifiers to use."
+              },
+              {
+                "name": "national_interests",
+                "type": "str",
+                "context": "agent",
+                "description": "Country's interests on emission reduction and climate finance (private profile field)."
+              }
+            ],
+            "output_updates": [
+              {
+                "name": "current_round",
+                "type": "int",
+                "context": "agent",
+                "description": "Round the delegate is in."
+              }
+            ]
+          }
+        },
+        "7": {
+          "code": "async def propose_amendment_or_concession(self, event: Event) -> List[Event]:\n        # Runs once per round, after this delegate has its own positions and has\n        # heard every delegate who speaks before it. Always reports to the chair.\n        round_no = as_int(getattr(event, \"round_number\", 1), 1)\n        state = get_state(self)\n        rs = round_state(state, round_no)\n        kind = event_name(event)\n        if kind == \"PositionFormedEvent\":\n            if str(event.from_agent_id) != str(self.profile_id):\n                return []\n            rs[\"own_positions_ready\"] = True\n        elif kind == \"PriorAmendmentsEvent\":\n            rs[\"prior_amendments\"] = list(getattr(event, \"prior_amendments\", None) or [])\n        else:\n            return []\n\n        if rs.get(\"proposal_started\") or not rs.get(\"own_positions_ready\"):\n            return []\n        order = rs.get(\"speaking_order\") or [str(self.profile_id)]\n        my_index = order.index(str(self.profile_id)) if str(self.profile_id) in order else 0\n        if my_index > 0 and rs.get(\"prior_amendments\") is None:\n            return []\n        rs[\"proposal_started\"] = True\n\n        clause_ids = rs.get(\"clause_ids\") or clause_list(None)\n        prior = rs.get(\"prior_amendments\") or []\n        review_positions = rs.get(\"review_positions\") or {cid: UNSPECIFIED for cid in clause_ids}\n        previous_final = dict(state.get(\"last_positions\", {}))\n        country = as_text(self.profile.get_data(\"country\", \"\"), 200)\n\n        proposal = {\n            \"delegate_id\": str(self.profile_id),\n            \"country\": country,\n            \"move\": \"failed\",\n            \"target_clauses\": [],\n            \"amendment_text\": \"\",\n            \"rationale\": \"\",\n            \"endorsed_delegate_id\": \"\",\n            \"willing_to_make_further_concessions\": False,\n            \"clause_positions\": dict(review_positions),\n            \"conditions\": dict(rs.get(\"review_conditions\") or {}),\n            \"failed\": True,\n            \"failure_reason\": \"\",\n        }\n        try:\n            observation = \"\\n\".join([\n                f\"Negotiation round: {round_no} of {rs.get('max_rounds', round_no)}\",\n                f\"You speak in position {my_index + 1} of {len(order)}.\",\n                \"Your positions after reviewing the draft this round: \" + json.dumps(review_positions, ensure_ascii=False),\n                \"Your conditions: \" + json.dumps(rs.get(\"review_conditions\") or {}, ensure_ascii=False),\n                \"Your reasoning: \" + (rs.get(\"review_notes\") or \"none\"),\n                \"Clauses still unsettled from earlier rounds: \" + (\", \".join(rs.get(\"open_divergences\") or []) or \"none\"),\n                \"Chair's compromise proposals: \"\n                + (json.dumps(rs.get(\"chair_proposals\") or {}, ensure_ascii=False) if rs.get(\"chair_proposals\") else \"none\"),\n                \"Proposals made earlier in this round by other delegates:\",\n                amendment_text_block(prior),\n            ])\n            instruction = \"\"\"You are a national delegate at a roundtable negotiation on a draft multilateral climate cooperation agreement. It is your turn to speak.\nChoose one move:\n- \"amendment\": propose specific new wording for one or more clauses;\n- \"endorsement\": back a proposal already made in this round by another delegate (give that delegate's ID);\n- \"concession\": soften your own position on a clause to help the table reach agreement.\nAfter hearing the earlier speakers you may revise your positions. Report your positions as they stand at the end of your turn.\n\nUse exactly these clause IDs: <<CLAUSE_IDS>>\nAllowed positions: \"Support\", \"Conditional Support\", \"Oppose\".\nIDs of delegates who spoke before you in this round: <<PRIOR_IDS>>\n\nReturn a JSON object:\n{\n    \"move\": \"amendment | endorsement | concession\",\n    \"target_clauses\": [\"<clause ID>\"],\n    \"amendment_text\": \"<the wording you propose, or the concession you make>\",\n    \"rationale\": \"<diplomatic or legal justification>\",\n    \"endorsed_delegate_id\": \"<ID of the delegate whose proposal you endorse, otherwise empty string>\",\n    \"final_positions\": {\"<clause ID>\": \"Support | Conditional Support | Oppose\"},\n    \"conditions\": {\"<clause ID with Conditional Support>\": \"<what would make it acceptable>\"},\n    \"willing_to_make_further_concessions\": true or false\n}\nSet willing_to_make_further_concessions to true only if you would genuinely consider additional concessions in a later round.\"\"\".replace(\n                \"<<CLAUSE_IDS>>\", json.dumps(clause_ids)).replace(\n                \"<<PRIOR_IDS>>\", json.dumps([str(a.get(\"delegate_id\")) for a in prior]))\n            result = await self.generate_reaction(instruction, observation)\n            if not isinstance(result, dict):\n                raise ValueError(\"reply is not a JSON object\")\n\n            move = normalize_move(result.get(\"move\"))\n            prior_ids = [str(a.get(\"delegate_id\")) for a in prior if a.get(\"delegate_id\")]\n            endorsed = as_text(result.get(\"endorsed_delegate_id\"), 50)\n            if endorsed not in prior_ids:\n                if endorsed:\n                    logger.warning(f\"Delegate {self.profile_id}: endorsed unknown delegate '{endorsed}', ignored\")\n                endorsed = \"\"\n            if move == \"endorsement\" and not endorsed:\n                move = \"amendment\"\n            final_positions, dropped, _ = normalize_positions(result.get(\"final_positions\"), clause_ids, fallback=review_positions)\n            if dropped:\n                logger.warning(f\"Delegate {self.profile_id}: ignored unrecognised positions {dropped}\")\n            conditions = dict(rs.get(\"review_conditions\") or {})\n            conditions.update(normalize_conditions(result.get(\"conditions\"), clause_ids))\n            conditions = {cid: text for cid, text in conditions.items() if final_positions.get(cid) == \"Conditional Support\"}\n            proposal.update({\n                \"move\": move,\n                \"target_clauses\": map_clause_list(result.get(\"target_clauses\"), clause_ids),\n                \"amendment_text\": as_text(result.get(\"amendment_text\"), 2000),\n                \"rationale\": as_text(result.get(\"rationale\"), 1500),\n                \"endorsed_delegate_id\": endorsed,\n                \"willing_to_make_further_concessions\": as_bool(result.get(\"willing_to_make_further_concessions\")),\n                \"clause_positions\": final_positions,\n                \"conditions\": conditions,\n                \"failed\": False,\n            })\n        except Exception as e:\n            proposal[\"failure_reason\"] = f\"{type(e).__name__}: {e}\"\n            logger.error(f\"Delegate {self.profile_id}: proposing failed in round {round_no}: {proposal['failure_reason']}\")\n\n        if rs.get(\"review_failed\") and not proposal[\"failure_reason\"]:\n            proposal[\"failure_reason\"] = \"positions could not be formed when reviewing the draft\"\n        positions_changed = count_position_changes(previous_final, proposal[\"clause_positions\"])\n        proposal[\"positions_changed\"] = positions_changed\n\n        merged = dict(previous_final)\n        merged.update({cid: pos for cid, pos in proposal[\"clause_positions\"].items() if pos != UNSPECIFIED})\n        state[\"last_positions\"] = merged\n        rs[\"proposal\"] = proposal\n        self.profile.update_data(\"current_round\", round_no)\n        self.profile.update_data(\"clause_positions\", proposal[\"clause_positions\"])\n        self.profile.update_data(\"last_move\", proposal[\"move\"])\n        self.profile.update_data(\"willing_to_concede\", proposal[\"willing_to_make_further_concessions\"])\n        self.profile.update_data(\"positions_changed_last_round\", positions_changed)\n\n        events = []\n        chair_id = rs.get(\"chair_id\")\n        if chair_id:\n            events.append(AmendmentProposedEvent(self.profile_id, chair_id, round_number=round_no, **proposal))\n        else:\n            logger.error(f\"Delegate {self.profile_id}: no chairperson known for round {round_no}; proposal not delivered.\")\n        if my_index + 1 < len(order):\n            events.append(PriorAmendmentsEvent(\n                self.profile_id,\n                order[my_index + 1],\n                round_number=round_no,\n                prior_amendments=prior + [proposal],\n            ))\n        return events",
+          "metadata": {
+            "id": 7,
+            "name": "propose_amendment_or_concession",
+            "condition": "Own positions formed AND the proposals of every earlier speaker in this round received",
+            "description": "Speaks in turn: proposes an amendment, endorses an earlier speaker's proposal, or makes a concession; reports end-of-turn positions and whether further concessions would be considered. Sends the proposal to the chair and the accumulated proposals to the next speaker.",
+            "type": "AND",
+            "required_variables": [
+              {
+                "name": "clause_positions",
+                "type": "dict[str, str]",
+                "context": "event",
+                "description": "Own positions from the review step."
+              },
+              {
+                "name": "prior_amendments",
+                "type": "list[dict]",
+                "context": "event",
+                "description": "Proposals of delegates who spoke earlier in this round (empty for the first speaker)."
+              }
+            ],
+            "output_updates": [
+              {
+                "name": "clause_positions",
+                "type": "dict[str, str]",
+                "context": "agent",
+                "description": "Positions at the end of the delegate's turn."
+              },
+              {
+                "name": "last_move",
+                "type": "str",
+                "context": "agent",
+                "description": "amendment / endorsement / concession / failed."
+              },
+              {
+                "name": "willing_to_concede",
+                "type": "bool",
+                "context": "agent",
+                "description": "Stated willingness to make further concessions later."
+              },
+              {
+                "name": "positions_changed_last_round",
+                "type": "int",
+                "context": "agent",
+                "description": "Clauses whose position changed since the previous round."
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "events": {
+    "imports": "from onesim.events import Event\nfrom typing import Dict, List, Any\nfrom datetime import datetime",
+    "definitions": {
+      "-1": {
+        "code": "class StartEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)",
+        "metadata": {
+          "id": -1,
+          "from_agent_type": "EnvAgent",
+          "from_action_name": "start",
+          "to_agent_type": "Chairperson",
+          "to_action_name": "set_agenda_and_distribute_draft",
+          "from_action_id": 0,
+          "to_action_id": 1,
+          "event_name": "StartEvent",
+          "event_info": "Environment starts a step; the chair opens a round",
+          "fields": [],
+          "code": ""
+        }
+      },
+      "1": {
+        "code": "class DraftDistributedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        max_rounds: int = 1,\n        draft_content: str = \"\",\n        clause_ids: List[str] = None,\n        agenda_items: List[str] = None,\n        speaking_order: List[str] = None,\n        previous_round_summary: str = \"\",\n        open_divergences: List[str] = None,\n        chair_proposals: Dict[str, str] = None,\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.max_rounds = max_rounds\n        self.draft_content = draft_content\n        self.clause_ids = clause_ids if clause_ids is not None else []\n        self.agenda_items = agenda_items if agenda_items is not None else []\n        self.speaking_order = speaking_order if speaking_order is not None else []\n        self.previous_round_summary = previous_round_summary\n        self.open_divergences = open_divergences if open_divergences is not None else []\n        self.chair_proposals = chair_proposals if chair_proposals is not None else {}",
+        "metadata": {
+          "id": 1,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "set_agenda_and_distribute_draft",
+          "to_agent_type": "Delegate",
+          "to_action_name": "review_draft_and_form_position",
+          "from_action_id": 1,
+          "to_action_id": 6,
+          "event_name": "DraftDistributedEvent",
+          "event_info": "Draft, clause list, speaking order and last round's outcome sent to each delegate at the table",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Negotiation round number."
+            },
+            {
+              "name": "max_rounds",
+              "type": "int",
+              "default_value": 1,
+              "description": "Rounds before an impasse is declared."
+            },
+            {
+              "name": "draft_content",
+              "type": "str",
+              "default_value": "",
+              "description": "Draft agreement text."
+            },
+            {
+              "name": "clause_ids",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Clause identifiers to use as keys."
+            },
+            {
+              "name": "agenda_items",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Agenda lines."
+            },
+            {
+              "name": "speaking_order",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Delegate IDs in speaking order."
+            },
+            {
+              "name": "previous_round_summary",
+              "type": "str",
+              "default_value": "",
+              "description": "Chair's summary of the previous round."
+            },
+            {
+              "name": "open_divergences",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Clauses unsettled after the previous round."
+            },
+            {
+              "name": "chair_proposals",
+              "type": "dict[str, str]",
+              "default_value": {},
+              "description": "Chair's compromise wording per unsettled clause."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "2": {
+        "code": "class NegotiationClosedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 0,\n        closure_reason: str = \"\",\n        final_outcome: str = \"\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.closure_reason = closure_reason\n        self.final_outcome = final_outcome",
+        "metadata": {
+          "id": 2,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "set_agenda_and_distribute_draft",
+          "to_agent_type": "EnvAgent",
+          "to_action_name": "terminate",
+          "from_action_id": 1,
+          "to_action_id": -1,
+          "event_name": "NegotiationClosedEvent",
+          "event_info": "Table already concluded or could not open; the step is closed at once",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 0,
+              "description": "Last round held."
+            },
+            {
+              "name": "closure_reason",
+              "type": "str",
+              "default_value": "",
+              "description": "Why the step closed."
+            },
+            {
+              "name": "final_outcome",
+              "type": "str",
+              "default_value": "",
+              "description": "Outcome reached earlier, if any."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "3": {
+        "code": "class PositionFormedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        delegate_id: str = \"\",\n        clause_positions: Dict[str, str] = None,\n        conditions: Dict[str, str] = None,\n        position_notes: str = \"\",\n        failed: bool = False,\n        failure_reason: str = \"\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.delegate_id = delegate_id\n        self.clause_positions = clause_positions if clause_positions is not None else {}\n        self.conditions = conditions if conditions is not None else {}\n        self.position_notes = position_notes\n        self.failed = failed\n        self.failure_reason = failure_reason",
+        "metadata": {
+          "id": 3,
+          "from_agent_type": "Delegate",
+          "from_action_name": "review_draft_and_form_position",
+          "to_agent_type": "Delegate",
+          "to_action_name": "propose_amendment_or_concession",
+          "from_action_id": 6,
+          "to_action_id": 7,
+          "event_name": "PositionFormedEvent",
+          "event_info": "Delegate's own positions for this round (sent to itself)",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "delegate_id",
+              "type": "str",
+              "default_value": "",
+              "description": "Delegate."
+            },
+            {
+              "name": "clause_positions",
+              "type": "dict[str, str]",
+              "default_value": {},
+              "description": "Positions per clause."
+            },
+            {
+              "name": "conditions",
+              "type": "dict[str, str]",
+              "default_value": {},
+              "description": "Conditions behind Conditional Support."
+            },
+            {
+              "name": "position_notes",
+              "type": "str",
+              "default_value": "",
+              "description": "Short reasoning."
+            },
+            {
+              "name": "failed",
+              "type": "bool",
+              "default_value": false,
+              "description": "No valid positions."
+            },
+            {
+              "name": "failure_reason",
+              "type": "str",
+              "default_value": "",
+              "description": "Why."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "4": {
+        "code": "class PriorAmendmentsEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        prior_amendments: List[Dict[str, Any]] = None,\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.prior_amendments = prior_amendments if prior_amendments is not None else []",
+        "metadata": {
+          "id": 4,
+          "from_agent_type": "Delegate",
+          "from_action_name": "propose_amendment_or_concession",
+          "to_agent_type": "Delegate",
+          "to_action_name": "propose_amendment_or_concession",
+          "from_action_id": 7,
+          "to_action_id": 7,
+          "event_name": "PriorAmendmentsEvent",
+          "event_info": "Proposals made so far in this round, passed to the next speaker",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "prior_amendments",
+              "type": "list[dict]",
+              "default_value": [],
+              "description": "Proposals of earlier speakers."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "5": {
+        "code": "class AmendmentProposedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        delegate_id: str = \"\",\n        country: str = \"\",\n        move: str = \"amendment\",\n        target_clauses: List[str] = None,\n        amendment_text: str = \"\",\n        rationale: str = \"\",\n        endorsed_delegate_id: str = \"\",\n        willing_to_make_further_concessions: bool = False,\n        clause_positions: Dict[str, str] = None,\n        conditions: Dict[str, str] = None,\n        positions_changed: int = 0,\n        failed: bool = False,\n        failure_reason: str = \"\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.delegate_id = delegate_id\n        self.country = country\n        self.move = move\n        self.target_clauses = target_clauses if target_clauses is not None else []\n        self.amendment_text = amendment_text\n        self.rationale = rationale\n        self.endorsed_delegate_id = endorsed_delegate_id\n        self.willing_to_make_further_concessions = willing_to_make_further_concessions\n        self.clause_positions = clause_positions if clause_positions is not None else {}\n        self.conditions = conditions if conditions is not None else {}\n        self.positions_changed = positions_changed\n        self.failed = failed\n        self.failure_reason = failure_reason",
+        "metadata": {
+          "id": 5,
+          "from_agent_type": "Delegate",
+          "from_action_name": "propose_amendment_or_concession",
+          "to_agent_type": "Chairperson",
+          "to_action_name": "collect_positions_and_divergences",
+          "from_action_id": 7,
+          "to_action_id": 2,
+          "event_name": "AmendmentProposedEvent",
+          "event_info": "Delegate's move and end-of-turn positions sent to the chair",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Negotiation round number."
+            },
+            {
+              "name": "delegate_id",
+              "type": "str",
+              "default_value": "",
+              "description": "Speaking delegate."
+            },
+            {
+              "name": "country",
+              "type": "str",
+              "default_value": "",
+              "description": "Delegate's country."
+            },
+            {
+              "name": "move",
+              "type": "str",
+              "default_value": "amendment",
+              "description": "amendment / endorsement / concession / failed."
+            },
+            {
+              "name": "target_clauses",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Clauses the move is about."
+            },
+            {
+              "name": "amendment_text",
+              "type": "str",
+              "default_value": "",
+              "description": "Proposed wording or concession."
+            },
+            {
+              "name": "rationale",
+              "type": "str",
+              "default_value": "",
+              "description": "Justification."
+            },
+            {
+              "name": "endorsed_delegate_id",
+              "type": "str",
+              "default_value": "",
+              "description": "Delegate whose proposal is endorsed."
+            },
+            {
+              "name": "willing_to_make_further_concessions",
+              "type": "bool",
+              "default_value": false,
+              "description": "Stated willingness to concede further later."
+            },
+            {
+              "name": "clause_positions",
+              "type": "dict[str, str]",
+              "default_value": {},
+              "description": "End-of-turn positions."
+            },
+            {
+              "name": "conditions",
+              "type": "dict[str, str]",
+              "default_value": {},
+              "description": "Conditions behind Conditional Support."
+            },
+            {
+              "name": "positions_changed",
+              "type": "int",
+              "default_value": 0,
+              "description": "Positions changed since the previous round."
+            },
+            {
+              "name": "failed",
+              "type": "bool",
+              "default_value": false,
+              "description": "True if the delegate produced no valid response."
+            },
+            {
+              "name": "failure_reason",
+              "type": "str",
+              "default_value": "",
+              "description": "Why the response was not valid."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "6": {
+        "code": "class PositionsCollectedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        all_positions: Dict[str, Dict[str, str]] = None,\n        all_amendments: List[Dict[str, Any]] = None,\n        clause_tally: Dict[str, Dict[str, int]] = None,\n        unsettled_clauses: List[str] = None,\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.all_positions = all_positions if all_positions is not None else {}\n        self.all_amendments = all_amendments if all_amendments is not None else []\n        self.clause_tally = clause_tally if clause_tally is not None else {}\n        self.unsettled_clauses = unsettled_clauses if unsettled_clauses is not None else []",
+        "metadata": {
+          "id": 6,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "collect_positions_and_divergences",
+          "to_agent_type": "Chairperson",
+          "to_action_name": "determine_outcome",
+          "from_action_id": 2,
+          "to_action_id": 3,
+          "event_name": "PositionsCollectedEvent",
+          "event_info": "Tally of the round (sent to itself)",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "all_positions",
+              "type": "dict[str, dict[str, str]]",
+              "default_value": {},
+              "description": "Positions per delegate."
+            },
+            {
+              "name": "all_amendments",
+              "type": "list[dict]",
+              "default_value": [],
+              "description": "Proposals of the round."
+            },
+            {
+              "name": "clause_tally",
+              "type": "dict[str, dict[str, int]]",
+              "default_value": {},
+              "description": "Counts per clause."
+            },
+            {
+              "name": "unsettled_clauses",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Opposed or unspecified clauses."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "7": {
+        "code": "class ConsensusReachedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        aligned_clauses: List[str] = None,\n        final_accepted_positions: Dict[str, str] = None,\n        accepted_amendments: List[Dict[str, Any]] = None,\n        chair_summary: str = \"\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.aligned_clauses = aligned_clauses if aligned_clauses is not None else []\n        self.final_accepted_positions = final_accepted_positions if final_accepted_positions is not None else {}\n        self.accepted_amendments = accepted_amendments if accepted_amendments is not None else []\n        self.chair_summary = chair_summary",
+        "metadata": {
+          "id": 7,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "determine_outcome",
+          "to_agent_type": "Chairperson",
+          "to_action_name": "issue_agreed_text",
+          "from_action_id": 3,
+          "to_action_id": 4,
+          "event_name": "ConsensusReachedEvent",
+          "event_info": "Every clause settled",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "aligned_clauses",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Settled clauses."
+            },
+            {
+              "name": "final_accepted_positions",
+              "type": "dict[str, str]",
+              "default_value": {},
+              "description": "Position per clause."
+            },
+            {
+              "name": "accepted_amendments",
+              "type": "list[dict]",
+              "default_value": [],
+              "description": "Proposals of the final round."
+            },
+            {
+              "name": "chair_summary",
+              "type": "str",
+              "default_value": "",
+              "description": "Chair's summary."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "8": {
+        "code": "class ImpasseDeclaredEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        divergent_clauses: List[str] = None,\n        concession_willingness_status: Dict[str, bool] = None,\n        clause_tally: Dict[str, Dict[str, int]] = None,\n        chair_summary: str = \"\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.divergent_clauses = divergent_clauses if divergent_clauses is not None else []\n        self.concession_willingness_status = concession_willingness_status if concession_willingness_status is not None else {}\n        self.clause_tally = clause_tally if clause_tally is not None else {}\n        self.chair_summary = chair_summary",
+        "metadata": {
+          "id": 8,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "determine_outcome",
+          "to_agent_type": "Chairperson",
+          "to_action_name": "declare_impasse",
+          "from_action_id": 3,
+          "to_action_id": 5,
+          "event_name": "ImpasseDeclaredEvent",
+          "event_info": "Clauses unsettled after the last round",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "divergent_clauses",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Unsettled clauses."
+            },
+            {
+              "name": "concession_willingness_status",
+              "type": "dict[str, bool]",
+              "default_value": {},
+              "description": "Stated willingness to concede."
+            },
+            {
+              "name": "clause_tally",
+              "type": "dict[str, dict[str, int]]",
+              "default_value": {},
+              "description": "Counts per clause."
+            },
+            {
+              "name": "chair_summary",
+              "type": "str",
+              "default_value": "",
+              "description": "Chair's summary."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "9": {
+        "code": "class RoundAdjournedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        open_divergences: List[str] = None,\n        chair_summary: str = \"\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.open_divergences = open_divergences if open_divergences is not None else []\n        self.chair_summary = chair_summary",
+        "metadata": {
+          "id": 9,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "determine_outcome",
+          "to_agent_type": "EnvAgent",
+          "to_action_name": "terminate",
+          "from_action_id": 3,
+          "to_action_id": -1,
+          "event_name": "RoundAdjournedEvent",
+          "event_info": "Clauses still unsettled and rounds remain; the step ends and the next step opens a new round",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "open_divergences",
+              "type": "list[str]",
+              "default_value": [],
+              "description": "Unsettled clauses."
+            },
+            {
+              "name": "chair_summary",
+              "type": "str",
+              "default_value": "",
+              "description": "Chair's summary."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "10": {
+        "code": "class AgreementFinalizedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        final_agreed_text: str = \"\",\n        simulation_status: str = \"Consensus\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.final_agreed_text = final_agreed_text\n        self.simulation_status = simulation_status",
+        "metadata": {
+          "id": 10,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "issue_agreed_text",
+          "to_agent_type": "EnvAgent",
+          "to_action_name": "terminate",
+          "from_action_id": 4,
+          "to_action_id": -1,
+          "event_name": "AgreementFinalizedEvent",
+          "event_info": "Agreed text issued; negotiation at this table ends in consensus",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "final_agreed_text",
+              "type": "str",
+              "default_value": "",
+              "description": "Agreed text."
+            },
+            {
+              "name": "simulation_status",
+              "type": "str",
+              "default_value": "Consensus",
+              "description": "Terminal state."
+            }
+          ],
+          "code": ""
+        }
+      },
+      "11": {
+        "code": "class ImpasseRecordedEvent(Event):\n    def __init__(self,\n        from_agent_id: str,\n        to_agent_id: str,\n        round_number: int = 1,\n        impasse_record: str = \"\",\n        simulation_status: str = \"Impasse\",\n        **kwargs: Any\n    ) -> None:\n        super().__init__(from_agent_id=from_agent_id, to_agent_id=to_agent_id, **kwargs)\n        self.round_number = round_number\n        self.impasse_record = impasse_record\n        self.simulation_status = simulation_status",
+        "metadata": {
+          "id": 11,
+          "from_agent_type": "Chairperson",
+          "from_action_name": "declare_impasse",
+          "to_agent_type": "EnvAgent",
+          "to_action_name": "terminate",
+          "from_action_id": 5,
+          "to_action_id": -1,
+          "event_name": "ImpasseRecordedEvent",
+          "event_info": "Impasse recorded; negotiation at this table ends in impasse",
+          "fields": [
+            {
+              "name": "round_number",
+              "type": "int",
+              "default_value": 1,
+              "description": "Round."
+            },
+            {
+              "name": "impasse_record",
+              "type": "str",
+              "default_value": "",
+              "description": "Impasse record."
+            },
+            {
+              "name": "simulation_status",
+              "type": "str",
+              "default_value": "Impasse",
+              "description": "Terminal state."
+            }
+          ],
+          "code": ""
+        }
+      }
+    }
+  }
+}

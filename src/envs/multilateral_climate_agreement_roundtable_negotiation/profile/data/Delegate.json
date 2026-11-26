@@ -1,0 +1,83 @@
+[
+    {
+        "name": "Ambassador John Smith",
+        "country": "United States",
+        "diplomatic_style": "Assertive but collaborative",
+        "national_interests": "The United States aims to reduce net greenhouse gas emissions by 50-52% below 2005 levels by 2030, with a focus on electrification, renewable energy, and industrial decarbonization. Financially, the U.S. seeks to maintain its leadership in clean energy markets and is willing to contribute to international climate funds, but emphasizes the need for reciprocal commitments from other major emitters.",
+        "group_id": 1,
+        "speaking_order": 1,
+        "id": "4"
+    },
+    {
+        "name": "Minister Priya Sharma",
+        "country": "India",
+        "diplomatic_style": "Cautious and procedural",
+        "national_interests": "India is committed to achieving net-zero emissions by 2070, with a target of 50% of its installed power capacity from non-fossil fuel sources by 2030. The country emphasizes the principle of common but differentiated responsibilities, seeking substantial financial and technological support from developed nations to meet its climate goals while ensuring energy security and economic growth.",
+        "group_id": 1,
+        "speaking_order": 2,
+        "id": "5"
+    },
+    {
+        "name": "Dr. Amina Diallo",
+        "country": "Senegal",
+        "diplomatic_style": "Aggressive and confrontational",
+        "national_interests": "Senegal focuses on adaptation and resilience, seeking significant financial support for climate-resilient infrastructure and sustainable agriculture. The country aims to reduce emissions intensity in its energy sector while prioritizing access to clean energy for its growing population, with a target of 50% renewable energy by 2030.",
+        "group_id": 1,
+        "speaking_order": 3,
+        "id": "6"
+    },
+    {
+        "name": "Minister Kenji Tanaka",
+        "country": "Japan",
+        "diplomatic_style": "Aggressive and confrontational",
+        "national_interests": "Japan is committed to achieving carbon neutrality by 2050, with an interim target of a 46% reduction in emissions by 2030. The country prioritizes technological innovation, particularly in hydrogen energy and carbon capture, and seeks financial mechanisms that support R&D and the deployment of new technologies.",
+        "group_id": 2,
+        "speaking_order": 1,
+        "id": "7"
+    },
+    {
+        "name": "Ambassador Elena Rodriguez",
+        "country": "Spain",
+        "diplomatic_style": "Flexible and conciliatory",
+        "national_interests": "Spain aims to achieve a 55% reduction in greenhouse gas emissions by 2030 compared to 1990 levels, with a strong emphasis on renewable energy integration and sustainable tourism. Financially, Spain seeks substantial EU funding and international climate finance to support its transition, particularly in regions dependent on fossil fuels.",
+        "group_id": 2,
+        "speaking_order": 2,
+        "id": "8"
+    },
+    {
+        "name": "Ambassador Rajesh Kumar",
+        "country": "India",
+        "diplomatic_style": "Cautious and procedural",
+        "national_interests": "India advocates for a differentiated approach to emission reduction intensity, emphasizing its right to develop and meet the energy needs of its growing population, while seeking significant financial commitments and technology transfer from developed nations to support its renewable energy expansion and climate resilience projects.",
+        "group_id": 2,
+        "speaking_order": 3,
+        "id": "9"
+    },
+    {
+        "name": "Dr. Sarah Johnson",
+        "country": "Canada",
+        "diplomatic_style": "Assertive but collaborative",
+        "national_interests": "Canada supports a robust emission reduction intensity target of 40-45% below 2005 levels by 2030, and seeks financial commitments that facilitate the development of its vast renewable energy resources, including hydro, wind, and solar, while ensuring a just transition for workers in fossil fuel industries.",
+        "group_id": 3,
+        "speaking_order": 1,
+        "id": "10"
+    },
+    {
+        "name": "Minister Fatou Ndiaye",
+        "country": "Senegal",
+        "diplomatic_style": "Flexible and conciliatory",
+        "national_interests": "Senegal prioritizes financial commitments from developed nations to fund climate adaptation measures, particularly in agriculture and coastal protection, while advocating for a fair and achievable emission reduction intensity target that accounts for its limited industrial capacity and development needs.",
+        "group_id": 3,
+        "speaking_order": 2,
+        "id": "11"
+    },
+    {
+        "name": "Ambassador Hiroshi Sato",
+        "country": "Japan",
+        "diplomatic_style": "Aggressive and confrontational",
+        "national_interests": "Japan emphasizes a technology-driven approach to emission reduction, aiming for carbon neutrality by 2050, and seeks financial commitments that support innovation in clean energy technologies, hydrogen economy, and carbon capture and storage (CCS) initiatives.",
+        "group_id": 3,
+        "speaking_order": 3,
+        "id": "12"
+    }
+]

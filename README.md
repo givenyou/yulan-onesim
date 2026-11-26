@@ -104,7 +104,7 @@ We provide a Docker image for easy deployment and a `Makefile` to simplify commo
     # docker build -t ptss/yulan-onesim:latest .
 
     # Run the container
-    docker run -d --name yulan-onesim -p 8000:80 -v ./config:/app/config ptss/yulan-onesim:latest
+    docker run -d --name yulan-onesim -p 8000:80 -v ./config:/app/config -v ./src/envs/multilateral_climate_agreement_roundtable_negotiation/runs:/app/src/envs/multilateral_climate_agreement_roundtable_negotiation/runs ptss/yulan-onesim:latest
     ```
 
 ### 📦 Installation from Source

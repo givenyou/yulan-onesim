@@ -15,7 +15,11 @@
 					</el-select>
 				</el-form-item>
 				<el-form-item label="Max Steps">
-					<el-input-number v-model="formData.environment.max_steps" :min="1"></el-input-number>
+					<el-input-number
+						v-model="formData.environment.max_steps"
+						:min="1"
+						:disabled="formData.environment.max_steps_locked"
+					></el-input-number>
 				</el-form-item>
 
 				<!-- Agent Settings -->
@@ -86,7 +90,7 @@
 							<el-form :model="editingProfile" label-width="50px">
 								<div class="form-group">
 									<el-form-item label="Count">
-										<el-input-number v-model="editingProfile.count" :min="0"
+										<el-input-number v-model="editingProfile.count" :min="editingProfile.minimum_count || 0"
 											:max="editingProfile.max_count"
 											@change="handleAgentCountChange(selectedAgent, $event)">
 										</el-input-number>
@@ -201,6 +205,10 @@ const handleSaveEdit = () => {
 
 const handleAgentCountChange = (agentType, value) => {
 	const profile = formData.agent.profile[agentType];
+	const minimum = profile.minimum_count || 0;
+	if (value < minimum) {
+		profile.count = minimum;
+	}
 	if (value > profile.max_count) {
 		profile.count = profile.max_count;
 	}
@@ -208,8 +216,13 @@ const handleAgentCountChange = (agentType, value) => {
 
 const handleAgentMaxCountChange = (agentType, value) => {
 	const profile = formData.agent.profile[agentType];
+	const minimum = profile.minimum_count || 0;
+	if (value < minimum) {
+		profile.max_count = minimum;
+		value = minimum;
+	}
 	if (profile.count > value) {
-		profile.count = value;
+		profile.count = Math.max(value, minimum);
 	}
 };
 /**
@@ -236,7 +249,7 @@ const handleSubmit = () => {
 		return;
 	}
 
-	if (!formData.agent.planning) {
+	if (typeof formData.agent.planning !== "string" || !planning.value.includes(formData.agent.planning)) {
 		ElMessage({
 			type: "warning",
 			message: "Please select planning strategy",
@@ -245,7 +258,7 @@ const handleSubmit = () => {
 		return;
 	}
 
-	if (!formData.agent.memory) {
+	if (typeof formData.agent.memory !== "string" || !memory.value.includes(formData.agent.memory)) {
 		ElMessage({
 			type: "warning",
 			message: "Please select memory strategy",
@@ -293,9 +306,11 @@ const handleSubmit = () => {
 		const isDevMode = gameStore.isDevMode;
 		console.log("ok");
 
+		const configToSave = JSON.parse(JSON.stringify(formData));
+		delete configToSave.environment.max_steps_locked;
 		let param = {
 			env_name: scenarioName,
-			config: formData,
+			config: configToSave,
 		};
 		axios.post(`/api/config/save`, param).then((res) => {
 			emit("settings-updated", formData);
@@ -334,6 +349,11 @@ const getAgents = () => {
 			gameStore.setSettingComplete(true);
 			loading.value = false;
 		}, 1000)
+	}).catch((err) => {
+		console.error("Failed to initialize simulation environment", err);
+		gameStore.setSettingComplete(false);
+		ElMessage.error(err.response?.data?.detail || "Failed to initialize simulation environment");
+		loading.value = false;
 	});
 	axios.get(`/api/config/options?env_name=` + localStorage.getItem('scenarioName')).then((res) => {
 		gameStore.systemConfig = res.data;
@@ -364,8 +384,8 @@ const handleReset = () => {
 					max_count: 5,
 				},
 			},
-			planning: ["None", "BDIPlanning", "COTPlanning", "TOMPlanning"],
-			memory: ["None", "ListStrategy", "ShortLongStrategy"],
+			planning: "None",
+			memory: "None",
 		},
 	});
 };
@@ -431,6 +451,9 @@ const getOptions = () => {
 					// 处理 max_steps
 					if (savedConfig?.simulator?.environment?.max_steps) {
 						formData.environment.max_steps = savedConfig.simulator.environment.max_steps;
+					}
+					if (formData.environment.max_steps_locked) {
+						formData.environment.max_steps = res.data.environment.max_steps;
 					}
 
 					// 处理 mode

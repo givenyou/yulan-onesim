@@ -9,6 +9,7 @@ import sys
 import importlib.util
 from loguru import logger
 import uuid
+import copy
 
 from backend.models.simulation import (
     InitializeAgentsRequest, InitializeAgentsResponse, 
@@ -24,6 +25,11 @@ from backend.utils.file_ops import create_directory, load_json
 from backend.utils.model_management import load_model_if_needed
 from backend.utils.websocket import connection_manager
 from backend.routers.config import USER_CONFIGS,DEFAULT_CONFIG,MODEL_CONFIG_PATH
+from backend.utils.scene_config import (
+    apply_agent_count_constraints,
+    apply_scene_runtime_constraints,
+    load_agent_count_settings,
+)
 
 
 # 导入需要的OneSim组件
@@ -40,6 +46,31 @@ from onesim.simulator.sim_env import SimulationState
 SIMULATION_REGISTRY = {}
 # 聊天记录单独保存，避免数据结构复杂化
 AGENT_CHAT_HISTORY = {}
+
+
+def _get_simulation_final_status(
+    completed_normally: bool,
+    failed: bool,
+) -> str:
+    if failed:
+        return "failed"
+    if completed_normally:
+        return "completed"
+    return "stopped"
+
+
+def _finalize_simulation_registry(
+    registry: Dict[str, Any],
+    sim_env: Any,
+    status: str,
+) -> None:
+    registry["running"] = False
+    registry["paused"] = False
+    registry["status"] = status
+    current_step = getattr(sim_env, "current_step", None)
+    if isinstance(current_step, int):
+        registry["step"] = current_step
+
 
 router = APIRouter(
     tags=["simulation"],
@@ -70,10 +101,16 @@ async def initialize_simulation(env_name: str, model_name: str = None) -> dict:
         # 获取配置 - 使用内存中的配置或默认配置
         if env_name in USER_CONFIGS:
             logger.info(f"使用内存中的环境配置: {env_name}")
-            config_data = USER_CONFIGS[env_name]
+            config_data = copy.deepcopy(USER_CONFIGS[env_name])
         else:
             logger.info(f"使用默认环境配置: {env_name}")
-            config_data = DEFAULT_CONFIG
+            config_data = copy.deepcopy(DEFAULT_CONFIG)
+
+        try:
+            apply_agent_count_constraints(config_data, env_path)
+            apply_scene_runtime_constraints(config_data, env_path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         # 确保配置包含必要的环境信息
         config_data['env_name'] = env_name
@@ -447,6 +484,25 @@ async def start_simulation(data: StartSimulationRequest):
     if not registry.get("initialized", False):
         raise HTTPException(status_code=400, detail=f"环境 '{env_name}' 未初始化。请先保存配置。")
 
+    try:
+        count_settings = load_agent_count_settings(registry["env_path"])
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        logger.error(f"Unable to validate agent counts for {env_name}: {e}")
+        raise HTTPException(status_code=500, detail="Unable to validate scenario agent count requirements")
+
+    minimum_counts = count_settings["minimum_agent_counts"]
+    agents = registry.get("agents", {})
+    insufficient_counts = {
+        agent_type: minimum_count
+        for agent_type, minimum_count in minimum_counts.items()
+        if len(agents.get(agent_type, {})) < minimum_count
+    }
+    if insufficient_counts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Scenario requires at least these agent counts: {insufficient_counts}. Save settings and reinitialize before starting.",
+        )
+
     # 检查是否已经在运行
     if registry.get("running", False):
         return StartSimulationResponse(
@@ -509,6 +565,8 @@ async def start_simulation(data: StartSimulationRequest):
 
         # 启动模拟任务
         async def run_simulation_tasks():
+            final_status = "stopped"
+            completed_normally = False
             try:
                 # 创建终止事件
                 termination_event = asyncio.Event()
@@ -536,6 +594,10 @@ async def start_simulation(data: StartSimulationRequest):
                 # 等待任务完成或终止信号
                 while not termination_event.is_set():
                     try:
+                        current_step = getattr(sim_env, "current_step", None)
+                        if isinstance(current_step, int):
+                            registry["step"] = current_step
+
                         # 检查任务状态
                         done, pending = await asyncio.wait(
                             [asyncio.create_task(termination_event.wait())] + all_tasks,
@@ -551,9 +613,11 @@ async def start_simulation(data: StartSimulationRequest):
 
                         # 检查任务状态
                         for task in done:
-                            if task.done():
-                                if task.exception():
-                                    logger.error(f"任务执行异常: {task.exception()}")
+                            if task.done() and not task.cancelled():
+                                task_error = task.exception()
+                                if task_error is not None:
+                                    final_status = "failed"
+                                    logger.error(f"任务执行异常: {task_error}")
                                     await sim_env.stop_simulation()
                                     termination_event.set()
                                     break
@@ -561,6 +625,7 @@ async def start_simulation(data: StartSimulationRequest):
                         # 如果事件总线停止运行，结束模拟
                         if hasattr(event_bus, "_running") and not event_bus._running:
                             logger.warning(f"事件总线已停止运行，环境: '{env_name}'")
+                            completed_normally = sim_env.is_terminated()
                             termination_event.set()
                             break
 
@@ -572,13 +637,19 @@ async def start_simulation(data: StartSimulationRequest):
                         logger.info(f"模拟任务被取消，环境: '{env_name}'")
                         break
                     except Exception as e:
+                        final_status = "failed"
                         logger.error(f"模拟执行错误: {e}")
                         await sim_env.stop_simulation()
                         termination_event.set()
 
+                final_status = _get_simulation_final_status(
+                    completed_normally,
+                    failed=final_status == "failed",
+                )
+
                 # 清理资源
                 logger.info(f"模拟已结束，清理资源，环境: '{env_name}'")
-                registry["running"] = False
+                _finalize_simulation_registry(registry, sim_env, final_status)
 
                 # 关闭环境的WebSocket连接
                 try:
@@ -596,8 +667,9 @@ async def start_simulation(data: StartSimulationRequest):
                 await asyncio.gather(*all_tasks, return_exceptions=True)
 
             except Exception as e:
+                final_status = "failed"
                 logger.error(f"模拟执行错误: {e}")
-                registry["running"] = False
+                _finalize_simulation_registry(registry, sim_env, final_status)
 
                 # 关闭环境的WebSocket连接
                 try:

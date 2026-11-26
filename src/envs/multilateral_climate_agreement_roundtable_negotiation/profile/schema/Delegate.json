@@ -1,0 +1,56 @@
+{
+    "name": {
+        "type": "str",
+        "default": "",
+        "private": false,
+        "sampling": "llm",
+        "description": "Full name of the delegate, typically a senior diplomat or minister."
+    },
+    "country": {
+        "type": "str",
+        "default": "",
+        "private": false,
+        "sampling": "llm",
+        "description": "Country the delegate represents. Countries should not repeat within one negotiation table."
+    },
+    "diplomatic_style": {
+        "type": "str",
+        "default": "Cautious and procedural",
+        "private": false,
+        "sampling": "random",
+        "choices": [
+            "Assertive but collaborative",
+            "Cautious and procedural",
+            "Aggressive and confrontational",
+            "Flexible and conciliatory"
+        ]
+    },
+    "national_interests": {
+        "type": "str",
+        "default": "",
+        "private": true,
+        "sampling": "llm",
+        "description": "The country's interests on emission reduction intensity and climate finance that guide the delegate's positions."
+    },
+    "group_id": {
+        "type": "int",
+        "default": 1,
+        "private": false,
+        "sampling": "default",
+        "description": "Negotiation table the delegate sits at; must match a Chairperson's group_id."
+    },
+    "speaking_order": {
+        "type": "int",
+        "default": 1,
+        "private": false,
+        "sampling": "default",
+        "description": "Order in which the delegate speaks at the table (1 speaks first)."
+    },
+    "id": {
+        "type": "str",
+        "default": "0",
+        "private": true,
+        "sampling": "default",
+        "description": "Unique id of agent"
+    }
+}

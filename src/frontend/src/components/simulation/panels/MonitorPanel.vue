@@ -125,13 +125,35 @@ export default {
       axios.get("/api/monitor/" + localStorage.getItem("scenarioName") + "/metrics")
         .then((res) => {
           const newMetrics = res.data.metrics || {};
-          for (const [key, metric] of Object.entries(newMetrics)) {
-            const chartIndex = this.charts.findIndex((_, i) => Object.values(this.metrics)[i]?.name === key);
-            if (chartIndex !== -1 && this.charts[chartIndex]) {
-              this.metrics[key].data = metric.data;
-              this.charts[chartIndex].setOption({ ...this.generateChartOption(metric) }, true);
-            }
+          const currentKeys = Object.keys(this.metrics);
+          const nextKeys = Object.keys(newMetrics);
+          const chartStructureChanged =
+            currentKeys.length !== nextKeys.length ||
+            nextKeys.some((key) => (
+              !this.metrics[key] ||
+              this.metrics[key].visualization_type !== newMetrics[key].visualization_type ||
+              (this.metrics[key].name || key) !== (newMetrics[key].name || key)
+            ));
+
+          this.metrics = newMetrics;
+
+          if (chartStructureChanged) {
+            this.$nextTick(() => this.renderCharts());
+            return;
           }
+
+          this.$nextTick(() => {
+            for (const [key, metric] of Object.entries(this.metrics)) {
+              const chartElement = this.chartRefs[metric.name || key];
+              const chart = chartElement && echarts.getInstanceByDom(chartElement);
+              if (chart) {
+                chart.setOption(this.generateChartOption(metric), true);
+              }
+            }
+          });
+        })
+        .catch((error) => {
+          console.error("Failed to refresh simulation metrics:", error);
         });
     },
     getEcharts() {
@@ -141,6 +163,9 @@ export default {
           this.$nextTick(() => {
             this.renderCharts();
           });
+        })
+        .catch((error) => {
+          console.error("Failed to load simulation metrics:", error);
         });
     },
     setChartRef(name, el) {

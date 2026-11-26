@@ -1,0 +1,12 @@
+[
+    {
+        "source_agent": "Chairperson",
+        "target_agent": "Delegate",
+        "direction": "bidirectional"
+    },
+    {
+        "source_agent": "Delegate",
+        "target_agent": "Delegate",
+        "direction": "bidirectional"
+    }
+]

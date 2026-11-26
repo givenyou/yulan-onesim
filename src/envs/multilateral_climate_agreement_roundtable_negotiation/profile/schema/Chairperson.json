@@ -1,0 +1,44 @@
+{
+    "name": {
+        "type": "str",
+        "default": "",
+        "private": false,
+        "sampling": "llm",
+        "description": "Full name of the Chairperson, a senior diplomat with experience in multilateral climate negotiations."
+    },
+    "role_title": {
+        "type": "str",
+        "default": "",
+        "private": false,
+        "sampling": "llm",
+        "description": "Formal diplomatic title of the Chairperson."
+    },
+    "diplomatic_style": {
+        "type": "str",
+        "default": "",
+        "private": false,
+        "sampling": "llm",
+        "description": "Communication style of the Chairperson, focusing on neutrality and procedural fairness."
+    },
+    "coordination_strategy": {
+        "type": "str",
+        "default": "",
+        "private": true,
+        "sampling": "llm",
+        "description": "How the Chairperson manages divergences and looks for compromise."
+    },
+    "group_id": {
+        "type": "int",
+        "default": 1,
+        "private": false,
+        "sampling": "default",
+        "description": "Negotiation table this Chairperson presides over. Delegates with the same group_id sit at this table."
+    },
+    "id": {
+        "type": "str",
+        "default": "0",
+        "private": true,
+        "sampling": "default",
+        "description": "Unique id of agent"
+    }
+}

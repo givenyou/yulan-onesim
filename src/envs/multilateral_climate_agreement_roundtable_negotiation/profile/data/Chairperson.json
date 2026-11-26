@@ -1,0 +1,26 @@
+[
+    {
+        "name": "James O'Connor",
+        "role_title": "Senior Diplomat and Chair of the Climate Negotiations",
+        "diplomatic_style": "Measured and impartial, focusing on clear procedural guidelines and transparent decision-making.",
+        "coordination_strategy": "Employs consensus-building through small working groups and targeted mediation to resolve key sticking points.",
+        "group_id": 1,
+        "id": "1"
+    },
+    {
+        "name": "Aisha Patel",
+        "role_title": "Ambassador and Presiding Officer of the Multilateral Climate Forum",
+        "diplomatic_style": "Balanced and respectful, prioritizing equitable representation and open communication channels.",
+        "coordination_strategy": "Utilizes phased negotiation tracks and regular progress reviews to align diverse national interests.",
+        "group_id": 2,
+        "id": "2"
+    },
+    {
+        "name": "Lars Nielsen",
+        "role_title": "Diplomatic Chairperson of the Global Climate Accord",
+        "diplomatic_style": "Objective and process-oriented, ensuring all voices are heard while maintaining strict adherence to procedural rules.",
+        "coordination_strategy": "Leverages technical expert panels and joint statements to build trust and advance shared commitments.",
+        "group_id": 3,
+        "id": "3"
+    }
+]

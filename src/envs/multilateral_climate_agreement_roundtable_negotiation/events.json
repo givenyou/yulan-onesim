@@ -1,0 +1,523 @@
+{
+    "-1": {
+        "id": -1,
+        "from_agent_type": "EnvAgent",
+        "from_action_name": "start",
+        "to_agent_type": "Chairperson",
+        "to_action_name": "set_agenda_and_distribute_draft",
+        "from_action_id": 0,
+        "to_action_id": 1,
+        "event_name": "StartEvent",
+        "event_info": "Environment starts a step; the chair opens a round",
+        "fields": [],
+        "code": ""
+    },
+    "1": {
+        "id": 1,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "set_agenda_and_distribute_draft",
+        "to_agent_type": "Delegate",
+        "to_action_name": "review_draft_and_form_position",
+        "from_action_id": 1,
+        "to_action_id": 6,
+        "event_name": "DraftDistributedEvent",
+        "event_info": "Draft, clause list, speaking order and last round's outcome sent to each delegate at the table",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Negotiation round number."
+            },
+            {
+                "name": "max_rounds",
+                "type": "int",
+                "default_value": 1,
+                "description": "Rounds before an impasse is declared."
+            },
+            {
+                "name": "draft_content",
+                "type": "str",
+                "default_value": "",
+                "description": "Draft agreement text."
+            },
+            {
+                "name": "clause_ids",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Clause identifiers to use as keys."
+            },
+            {
+                "name": "agenda_items",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Agenda lines."
+            },
+            {
+                "name": "speaking_order",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Delegate IDs in speaking order."
+            },
+            {
+                "name": "previous_round_summary",
+                "type": "str",
+                "default_value": "",
+                "description": "Chair's summary of the previous round."
+            },
+            {
+                "name": "open_divergences",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Clauses unsettled after the previous round."
+            },
+            {
+                "name": "chair_proposals",
+                "type": "dict[str, str]",
+                "default_value": {},
+                "description": "Chair's compromise wording per unsettled clause."
+            }
+        ],
+        "code": ""
+    },
+    "2": {
+        "id": 2,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "set_agenda_and_distribute_draft",
+        "to_agent_type": "EnvAgent",
+        "to_action_name": "terminate",
+        "from_action_id": 1,
+        "to_action_id": -1,
+        "event_name": "NegotiationClosedEvent",
+        "event_info": "Table already concluded or could not open; the step is closed at once",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 0,
+                "description": "Last round held."
+            },
+            {
+                "name": "closure_reason",
+                "type": "str",
+                "default_value": "",
+                "description": "Why the step closed."
+            },
+            {
+                "name": "final_outcome",
+                "type": "str",
+                "default_value": "",
+                "description": "Outcome reached earlier, if any."
+            }
+        ],
+        "code": ""
+    },
+    "3": {
+        "id": 3,
+        "from_agent_type": "Delegate",
+        "from_action_name": "review_draft_and_form_position",
+        "to_agent_type": "Delegate",
+        "to_action_name": "propose_amendment_or_concession",
+        "from_action_id": 6,
+        "to_action_id": 7,
+        "event_name": "PositionFormedEvent",
+        "event_info": "Delegate's own positions for this round (sent to itself)",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "delegate_id",
+                "type": "str",
+                "default_value": "",
+                "description": "Delegate."
+            },
+            {
+                "name": "clause_positions",
+                "type": "dict[str, str]",
+                "default_value": {},
+                "description": "Positions per clause."
+            },
+            {
+                "name": "conditions",
+                "type": "dict[str, str]",
+                "default_value": {},
+                "description": "Conditions behind Conditional Support."
+            },
+            {
+                "name": "position_notes",
+                "type": "str",
+                "default_value": "",
+                "description": "Short reasoning."
+            },
+            {
+                "name": "failed",
+                "type": "bool",
+                "default_value": false,
+                "description": "No valid positions."
+            },
+            {
+                "name": "failure_reason",
+                "type": "str",
+                "default_value": "",
+                "description": "Why."
+            }
+        ],
+        "code": ""
+    },
+    "4": {
+        "id": 4,
+        "from_agent_type": "Delegate",
+        "from_action_name": "propose_amendment_or_concession",
+        "to_agent_type": "Delegate",
+        "to_action_name": "propose_amendment_or_concession",
+        "from_action_id": 7,
+        "to_action_id": 7,
+        "event_name": "PriorAmendmentsEvent",
+        "event_info": "Proposals made so far in this round, passed to the next speaker",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "prior_amendments",
+                "type": "list[dict]",
+                "default_value": [],
+                "description": "Proposals of earlier speakers."
+            }
+        ],
+        "code": ""
+    },
+    "5": {
+        "id": 5,
+        "from_agent_type": "Delegate",
+        "from_action_name": "propose_amendment_or_concession",
+        "to_agent_type": "Chairperson",
+        "to_action_name": "collect_positions_and_divergences",
+        "from_action_id": 7,
+        "to_action_id": 2,
+        "event_name": "AmendmentProposedEvent",
+        "event_info": "Delegate's move and end-of-turn positions sent to the chair",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Negotiation round number."
+            },
+            {
+                "name": "delegate_id",
+                "type": "str",
+                "default_value": "",
+                "description": "Speaking delegate."
+            },
+            {
+                "name": "country",
+                "type": "str",
+                "default_value": "",
+                "description": "Delegate's country."
+            },
+            {
+                "name": "move",
+                "type": "str",
+                "default_value": "amendment",
+                "description": "amendment / endorsement / concession / failed."
+            },
+            {
+                "name": "target_clauses",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Clauses the move is about."
+            },
+            {
+                "name": "amendment_text",
+                "type": "str",
+                "default_value": "",
+                "description": "Proposed wording or concession."
+            },
+            {
+                "name": "rationale",
+                "type": "str",
+                "default_value": "",
+                "description": "Justification."
+            },
+            {
+                "name": "endorsed_delegate_id",
+                "type": "str",
+                "default_value": "",
+                "description": "Delegate whose proposal is endorsed."
+            },
+            {
+                "name": "willing_to_make_further_concessions",
+                "type": "bool",
+                "default_value": false,
+                "description": "Stated willingness to concede further later."
+            },
+            {
+                "name": "clause_positions",
+                "type": "dict[str, str]",
+                "default_value": {},
+                "description": "End-of-turn positions."
+            },
+            {
+                "name": "conditions",
+                "type": "dict[str, str]",
+                "default_value": {},
+                "description": "Conditions behind Conditional Support."
+            },
+            {
+                "name": "positions_changed",
+                "type": "int",
+                "default_value": 0,
+                "description": "Positions changed since the previous round."
+            },
+            {
+                "name": "failed",
+                "type": "bool",
+                "default_value": false,
+                "description": "True if the delegate produced no valid response."
+            },
+            {
+                "name": "failure_reason",
+                "type": "str",
+                "default_value": "",
+                "description": "Why the response was not valid."
+            }
+        ],
+        "code": ""
+    },
+    "6": {
+        "id": 6,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "collect_positions_and_divergences",
+        "to_agent_type": "Chairperson",
+        "to_action_name": "determine_outcome",
+        "from_action_id": 2,
+        "to_action_id": 3,
+        "event_name": "PositionsCollectedEvent",
+        "event_info": "Tally of the round (sent to itself)",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "all_positions",
+                "type": "dict[str, dict[str, str]]",
+                "default_value": {},
+                "description": "Positions per delegate."
+            },
+            {
+                "name": "all_amendments",
+                "type": "list[dict]",
+                "default_value": [],
+                "description": "Proposals of the round."
+            },
+            {
+                "name": "clause_tally",
+                "type": "dict[str, dict[str, int]]",
+                "default_value": {},
+                "description": "Counts per clause."
+            },
+            {
+                "name": "unsettled_clauses",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Opposed or unspecified clauses."
+            }
+        ],
+        "code": ""
+    },
+    "7": {
+        "id": 7,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "determine_outcome",
+        "to_agent_type": "Chairperson",
+        "to_action_name": "issue_agreed_text",
+        "from_action_id": 3,
+        "to_action_id": 4,
+        "event_name": "ConsensusReachedEvent",
+        "event_info": "Every clause settled",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "aligned_clauses",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Settled clauses."
+            },
+            {
+                "name": "final_accepted_positions",
+                "type": "dict[str, str]",
+                "default_value": {},
+                "description": "Position per clause."
+            },
+            {
+                "name": "accepted_amendments",
+                "type": "list[dict]",
+                "default_value": [],
+                "description": "Proposals of the final round."
+            },
+            {
+                "name": "chair_summary",
+                "type": "str",
+                "default_value": "",
+                "description": "Chair's summary."
+            }
+        ],
+        "code": ""
+    },
+    "8": {
+        "id": 8,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "determine_outcome",
+        "to_agent_type": "Chairperson",
+        "to_action_name": "declare_impasse",
+        "from_action_id": 3,
+        "to_action_id": 5,
+        "event_name": "ImpasseDeclaredEvent",
+        "event_info": "Clauses unsettled after the last round",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "divergent_clauses",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Unsettled clauses."
+            },
+            {
+                "name": "concession_willingness_status",
+                "type": "dict[str, bool]",
+                "default_value": {},
+                "description": "Stated willingness to concede."
+            },
+            {
+                "name": "clause_tally",
+                "type": "dict[str, dict[str, int]]",
+                "default_value": {},
+                "description": "Counts per clause."
+            },
+            {
+                "name": "chair_summary",
+                "type": "str",
+                "default_value": "",
+                "description": "Chair's summary."
+            }
+        ],
+        "code": ""
+    },
+    "9": {
+        "id": 9,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "determine_outcome",
+        "to_agent_type": "EnvAgent",
+        "to_action_name": "terminate",
+        "from_action_id": 3,
+        "to_action_id": -1,
+        "event_name": "RoundAdjournedEvent",
+        "event_info": "Clauses still unsettled and rounds remain; the step ends and the next step opens a new round",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "open_divergences",
+                "type": "list[str]",
+                "default_value": [],
+                "description": "Unsettled clauses."
+            },
+            {
+                "name": "chair_summary",
+                "type": "str",
+                "default_value": "",
+                "description": "Chair's summary."
+            }
+        ],
+        "code": ""
+    },
+    "10": {
+        "id": 10,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "issue_agreed_text",
+        "to_agent_type": "EnvAgent",
+        "to_action_name": "terminate",
+        "from_action_id": 4,
+        "to_action_id": -1,
+        "event_name": "AgreementFinalizedEvent",
+        "event_info": "Agreed text issued; negotiation at this table ends in consensus",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "final_agreed_text",
+                "type": "str",
+                "default_value": "",
+                "description": "Agreed text."
+            },
+            {
+                "name": "simulation_status",
+                "type": "str",
+                "default_value": "Consensus",
+                "description": "Terminal state."
+            }
+        ],
+        "code": ""
+    },
+    "11": {
+        "id": 11,
+        "from_agent_type": "Chairperson",
+        "from_action_name": "declare_impasse",
+        "to_agent_type": "EnvAgent",
+        "to_action_name": "terminate",
+        "from_action_id": 5,
+        "to_action_id": -1,
+        "event_name": "ImpasseRecordedEvent",
+        "event_info": "Impasse recorded; negotiation at this table ends in impasse",
+        "fields": [
+            {
+                "name": "round_number",
+                "type": "int",
+                "default_value": 1,
+                "description": "Round."
+            },
+            {
+                "name": "impasse_record",
+                "type": "str",
+                "default_value": "",
+                "description": "Impasse record."
+            },
+            {
+                "name": "simulation_status",
+                "type": "str",
+                "default_value": "Impasse",
+                "description": "Terminal state."
+            }
+        ],
+        "code": ""
+    }
+}

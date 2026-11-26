@@ -1,0 +1,23 @@
+{
+    "draft_content": "Article 3: Mitigation Commitments. Each Party shall implement national policies to reduce greenhouse gas emissions by 45% below 2005 levels by 2030. Article 7: Financial Mechanisms. Developed Parties shall provide an annual aggregate of $100 billion in climate finance to developing Parties, with 50% allocated to adaptation and 50% to mitigation. Article 12: Compliance. A compliance committee shall be established to review Party performance every two years, with non-compliance resulting in mandatory corrective action plans.",
+    "clause_ids": [
+        "Article 3",
+        "Article 7",
+        "Article 12",
+        "Definitions"
+    ],
+    "agenda_items": [
+        "Article 3: review and amendment of the emission reduction intensity targets",
+        "Article 7: financial commitment structures and disbursement timelines",
+        "Article 12: compliance mechanisms and enforcement protocols",
+        "Definitions: legal definitions of 'developed' and 'developing' Parties in the context of climate finance"
+    ],
+    "max_rounds": 3,
+    "bus_idle_timeout": 120,
+    "round_completion_events": [
+        "RoundAdjournedEvent",
+        "AgreementFinalizedEvent",
+        "ImpasseRecordedEvent",
+        "NegotiationClosedEvent"
+    ]
+}

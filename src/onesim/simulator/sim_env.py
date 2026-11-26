@@ -129,6 +129,9 @@ class BasicSimEnv:
         self._queue = asyncio.Queue()
         self._event_schema = {}
         self._lock = asyncio.Lock()
+        self._round_completion_event_kinds = set()
+        self._round_completion_sources = set()
+        self._round_completion_timeout_logged = False
 
         # Bus monitoring
         self._last_event_time = time.time()
@@ -737,16 +740,38 @@ class BasicSimEnv:
         # Round can complete if either:
         # 1. All agents have terminated
         # 2. No events for dynamic time
-        all_terminated = all(count >= self.current_step for count in self.ended_agents.values())
+        has_explicit_round_completion = bool(self._round_completion_event_kinds)
+        expected_sources = {
+            str(agent_id)
+            for agent_id in self.start_targets.get("Chairperson", [])
+        }
+        round_signals_complete = (
+            has_explicit_round_completion
+            and bool(expected_sources)
+            and expected_sources.issubset(self._round_completion_sources)
+        )
+        all_terminated = (
+            not has_explicit_round_completion
+            and all(count >= self.current_step for count in self.ended_agents.values())
+        )
         long_idle = (
             (current_time - self._last_event_time > idle_timeout) and
             self.event_bus.is_empty() and
             self._queue.empty()
         )
 
+        if has_explicit_round_completion and long_idle and not round_signals_complete:
+            if not self._round_completion_timeout_logged:
+                logger.error(
+                    f"Step {self.current_step} is idle but missing explicit round completion "
+                    f"signals from tables: {sorted(expected_sources - self._round_completion_sources)}"
+                )
+                self._round_completion_timeout_logged = True
+            return
+
         # Save round data before moving to next round
 
-        if all_terminated or long_idle:
+        if round_signals_complete or all_terminated or (long_idle and not has_explicit_round_completion):
             if long_idle:
                 logger.warning(f"Step {self.current_step} (Round Mode) completed due to idle timeout (dynamic timeout: {idle_timeout:.1f}s)")
 
@@ -775,6 +800,8 @@ class BasicSimEnv:
             # Reset pause time accumulator for the next round
             self._pause_cumulative_time = 0.0
             self._last_event_time = time.time()
+            self._round_completion_sources.clear()
+            self._round_completion_timeout_logged = False
             if self.current_step < self.max_steps:
                 self.current_step += 1
                 await self.start()
@@ -786,6 +813,24 @@ class BasicSimEnv:
                     logger.info(f"Trail {self.trail_id} status updated to COMPLETED")
                 # Call stop_simulation to properly terminate in both single and distributed modes
                 await self.stop_simulation()
+
+    async def handle_round_completion_event(self, event: Event) -> None:
+        """Complete a round only after every configured table reports its outcome."""
+        expected_sources = {
+            str(agent_id)
+            for agent_id in self.start_targets.get("Chairperson", [])
+        }
+        source_id = str(event.from_agent_id)
+        if source_id not in expected_sources:
+            logger.warning(
+                f"Ignoring round completion signal from unexpected table chair {source_id}"
+            )
+            return
+
+        self._round_completion_sources.add(source_id)
+        self._round_completion_timeout_logged = False
+        if expected_sources.issubset(self._round_completion_sources):
+            await self._check_round_completion()
 
     async def _check_timed_completion(self):
         """Check for simulation completion in timed mode."""
@@ -874,9 +919,17 @@ class BasicSimEnv:
             try:
                 async with aiofiles.open(env_file, 'r') as f:
                     data = json.loads(await f.read())
+                completion_events = data.get('round_completion_events', [])
+                if not isinstance(completion_events, list) or not all(
+                    isinstance(event_kind, str) and event_kind for event_kind in completion_events
+                ):
+                    raise ValueError("round_completion_events in env_data.json must be a list of event names")
                 # Update data using the async lock
                 async with self._lock:
                     self.data.update(data)
+                self._round_completion_event_kinds = set(completion_events)
+                for event_kind in self._round_completion_event_kinds:
+                    self.register_event(event_kind, "handle_round_completion_event")
                 logger.info(f"Loaded initial environment data from {env_file}")
             except json.JSONDecodeError:
                 logger.error(f"Error decoding JSON from environment file: {env_file}")

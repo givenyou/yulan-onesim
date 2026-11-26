@@ -1,0 +1,19 @@
+source_id,target_id,direction,relationship_type
+1,4,bidirectional,Chairperson and delegate at the same negotiation table
+1,5,bidirectional,Chairperson and delegate at the same negotiation table
+1,6,bidirectional,Chairperson and delegate at the same negotiation table
+4,5,bidirectional,Fellow delegates at the same negotiation table
+4,6,bidirectional,Fellow delegates at the same negotiation table
+5,6,bidirectional,Fellow delegates at the same negotiation table
+2,7,bidirectional,Chairperson and delegate at the same negotiation table
+2,8,bidirectional,Chairperson and delegate at the same negotiation table
+2,9,bidirectional,Chairperson and delegate at the same negotiation table
+7,8,bidirectional,Fellow delegates at the same negotiation table
+7,9,bidirectional,Fellow delegates at the same negotiation table
+8,9,bidirectional,Fellow delegates at the same negotiation table
+3,10,bidirectional,Chairperson and delegate at the same negotiation table
+3,11,bidirectional,Chairperson and delegate at the same negotiation table
+3,12,bidirectional,Chairperson and delegate at the same negotiation table
+10,11,bidirectional,Fellow delegates at the same negotiation table
+10,12,bidirectional,Fellow delegates at the same negotiation table
+11,12,bidirectional,Fellow delegates at the same negotiation table
